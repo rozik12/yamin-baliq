@@ -158,6 +158,7 @@ db.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, lang TEXT)"
 db.execute("CREATE TABLE IF NOT EXISTS reviews(order_id INTEGER PRIMARY KEY, user_id INT, rating INT)")
 db.execute("CREATE TABLE IF NOT EXISTS stoplist(item_id TEXT PRIMARY KEY)")
 db.execute("CREATE TABLE IF NOT EXISTS admins(id INTEGER PRIMARY KEY)")
+db.execute("CREATE TABLE IF NOT EXISTS overrides(key TEXT PRIMARY KEY, value TEXT)")
 db.execute("CREATE TABLE IF NOT EXISTS promos(code TEXT PRIMARY KEY, percent INT)")
 for col in ("items TEXT", "courier_id INT", "courier_name TEXT", "dest TEXT", "yandex_id TEXT", "proof TEXT"):
     try:
@@ -166,6 +167,43 @@ for col in ("items TEXT", "courier_id INT", "courier_name TEXT", "dest TEXT", "y
         pass
 db.commit()
 
+SETTINGS = {  # key: (подпись, тип)
+    "card_number": ("💳 Номер карты", "card"), "card_holder": ("👤 Имя владельца карты", "text"),
+    "phone": ("📞 Телефон ресторана", "text"), "address": ("📍 Адрес", "text"), "hours": ("🕒 Часы работы", "text"),
+    "delivery_fee": ("🚚 Стоимость доставки (сум)", "int"), "free_delivery_from": ("🆓 Бесплатная доставка от (сум)", "int"),
+    "min_order": ("🛒 Минимальная сумма заказа (сум)", "int")}
+
+
+def set_override(key, value):
+    db.execute("INSERT OR REPLACE INTO overrides(key,value) VALUES(?,?)", (key, str(value)))
+    db.commit()
+    apply_override(key, str(value))
+
+
+def apply_override(key, v):
+    kind, _, name = key.partition(":")
+    if kind == "price" and name in ITEMS:
+        ITEMS[name]["price"] = int(v)
+    elif kind == "photo" and name in ITEMS:
+        ITEMS[name]["photo_override"] = v
+    elif key in ("card_number", "card_holder"):
+        card = dict(INFO.get("card") or {"number": "", "holder": ""})
+        card["number" if key == "card_number" else "holder"] = v
+        INFO["card"] = card
+    elif key in ("address", "hours"):
+        INFO[key] = {"ru": v, "uz": v, "en": v}
+    elif key == "phone":
+        INFO["phone"] = v
+    elif key in ("delivery_fee", "free_delivery_from", "min_order"):
+        INFO[key] = int(v)
+
+
+for _k, _v in db.execute("SELECT key, value FROM overrides").fetchall():
+    try:
+        apply_override(_k, _v)
+    except Exception:
+        logging.exception("bad override %s", _k)
+
 promos_applied: dict[int, tuple[str, int]] = {}
 carts: dict[int, dict[str, int]] = {}
 router = Router()
@@ -173,6 +211,7 @@ router = Router()
 
 SETUP_CODE = os.environ.get("ADMIN_SETUP_CODE", "")
 ADMIN_BTN = "📋 Заказы (админ)"
+SETTINGS_BTN = "⚙️ Настройки (админ)"
 
 
 def all_admins():
@@ -218,6 +257,10 @@ class Order(StatesGroup):
     proof = State()
 
 
+class AdminEdit(StatesGroup):
+    value = State()
+
+
 class PromoSt(StatesGroup):
     code = State()
 
@@ -234,6 +277,7 @@ def main_kb(uid):
         b.button(text=t(uid, k))
     if is_admin(uid):
         b.button(text=ADMIN_BTN)
+        b.button(text=SETTINGS_BTN)
     return b.adjust(2).as_markup(resize_keyboard=True)
 
 
@@ -320,6 +364,8 @@ async def back_menu(c: CallbackQuery):
 
 
 def photo_of(item):
+    if item.get("photo_override"):
+        return item["photo_override"]
     for ext in ("jpg", "jpeg", "png"):
         p = CDIR / "photos" / f"{item['id']}.{ext}"
         if p.exists():
@@ -1046,6 +1092,118 @@ async def active_orders(m: Message):
             except Exception:
                 logging.exception("proof show failed")
         await m.answer(caption, reply_markup=kb)
+
+
+def adm_home_kb():
+    b = InlineKeyboardBuilder()
+    b.button(text="💰 Цены блюд", callback_data="adm:prices")
+    b.button(text="🖼 Фото блюд", callback_data="adm:photos")
+    b.button(text="💳 Карта для оплаты", callback_data="adm:card")
+    b.button(text="ℹ️ Контакты и доставка", callback_data="adm:info")
+    return b.adjust(1).as_markup()
+
+
+@router.message(Command("settings"))
+@router.message(F.text == SETTINGS_BTN)
+async def admin_settings(m: Message, state: FSMContext):
+    if not is_admin(m.from_user.id):
+        return
+    await state.clear()
+    await m.answer("⚙️ Что изменить? Изменения вступают в силу сразу.", reply_markup=adm_home_kb())
+
+
+@router.callback_query(F.data.startswith("adm:"))
+async def admin_nav(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id):
+        return await c.answer("Нет доступа", show_alert=True)
+    parts = c.data.split(":")
+    act = parts[1]
+    b = InlineKeyboardBuilder()
+    text = "Что изменить?"
+    if act == "home":
+        await state.clear()
+        return await c.message.edit_text("⚙️ Что изменить? Изменения вступают в силу сразу.", reply_markup=adm_home_kb())
+    if act in ("prices", "photos"):
+        pre = "pc" if act == "prices" else "fc"
+        for cat in CATS.values():
+            b.button(text=cat["name"]["ru"], callback_data=f"adm:{pre}:{cat['id']}")
+        text = "Выберите раздел:"
+    elif act in ("pc", "fc") and parts[2] in CATS:
+        for i in CATS[parts[2]]["items"]:
+            label = f"{i['name']['ru']} — {money(i['price'], 'ru')}" if act == "pc" else f"🖼 {i['name']['ru']}"
+            b.button(text=label, callback_data=f"adm:{'p' if act == 'pc' else 'f'}:{i['id']}")
+        text = "Выберите блюдо:"
+    elif act in ("p", "f") and parts[2] in ITEMS:
+        item = ITEMS[parts[2]]
+        await state.set_state(AdminEdit.value)
+        await state.update_data(kind="price" if act == "p" else "photo", key=parts[2])
+        ask = (f"Введите новую цену для «{item['name']['ru']}» числом в сумах (сейчас {money(item['price'], 'ru')}):"
+               if act == "p" else f"Отправьте новое фото для «{item['name']['ru']}» (как фото, не файлом):")
+        await c.message.answer(ask + "\n\n/cancel — отмена")
+        return await c.answer()
+    elif act == "card":
+        for k in ("card_number", "card_holder"):
+            b.button(text=SETTINGS[k][0], callback_data=f"adm:s:{k}")
+        card = INFO.get("card") or {}
+        text = f"Сейчас: {card.get('number', 'не задана')} {card.get('holder', '')}".strip()
+    elif act == "info":
+        for k in ("phone", "address", "hours", "delivery_fee", "free_delivery_from", "min_order"):
+            b.button(text=SETTINGS[k][0], callback_data=f"adm:s:{k}")
+        text = (f"Телефон: {INFO['phone']}\nАдрес: {INFO['address']['ru']}\nЧасы: {INFO['hours']['ru']}\n"
+                f"Доставка: {money(INFO['delivery_fee'], 'ru')}, бесплатно от {money(INFO['free_delivery_from'], 'ru')}\n"
+                f"Минимальный заказ: {money(INFO.get('min_order', 0), 'ru')}")
+    elif act == "s" and parts[2] in SETTINGS:
+        await state.set_state(AdminEdit.value)
+        await state.update_data(kind="setting", key=parts[2])
+        await c.message.answer(f"Введите новое значение: {SETTINGS[parts[2]][0]}\n\n/cancel — отмена")
+        return await c.answer()
+    else:
+        return await c.answer()
+    b.button(text="⬅️ Назад", callback_data="adm:home")
+    await c.message.edit_text(text, reply_markup=b.adjust(1).as_markup())
+    await c.answer()
+
+
+@router.message(AdminEdit.value)
+async def admin_save(m: Message, state: FSMContext):
+    if not is_admin(m.from_user.id):
+        return await state.clear()
+    d = await state.get_data()
+    kind, key = d.get("kind"), d.get("key")
+    text = (m.text or "").strip()
+    if text == "/cancel":
+        await state.clear()
+        return await m.answer("Отменено", reply_markup=main_kb(m.from_user.id))
+    if kind == "photo":
+        if not m.photo:
+            return await m.answer("Отправьте именно фото (не файл), или /cancel")
+        set_override(f"photo:{key}", m.photo[-1].file_id)
+        done = f"Фото для «{ITEMS[key]['name']['ru']}» обновлено ✅"
+    elif kind == "price":
+        digits = text.replace(" ", "").replace(",", "")
+        if not digits.isdigit() or not 100 <= int(digits) <= 100_000_000:
+            return await m.answer("Введите цену числом, например 125000, или /cancel")
+        set_override(f"price:{key}", int(digits))
+        done = f"Цена «{ITEMS[key]['name']['ru']}»: {money(int(digits), 'ru')} ✅"
+    else:
+        label, typ = SETTINGS[key]
+        value = text
+        if typ == "int":
+            value = text.replace(" ", "")
+            if not value.isdigit():
+                return await m.answer("Введите число, или /cancel")
+        elif typ == "card":
+            value = text.replace(" ", "")
+            if not (value.isdigit() and 12 <= len(value) <= 19):
+                return await m.answer("Номер карты — только цифры (16 цифр), или /cancel")
+            value = " ".join(value[i:i + 4] for i in range(0, len(value), 4))
+        elif not text:
+            return await m.answer("Введите текст, или /cancel")
+        set_override(key, value)
+        done = f"{label} обновлено ✅"
+    await state.clear()
+    await m.answer(done, reply_markup=main_kb(m.from_user.id))
+    await m.answer("⚙️ Что ещё изменить?", reply_markup=adm_home_kb())
 
 
 @router.message(Command("export"))

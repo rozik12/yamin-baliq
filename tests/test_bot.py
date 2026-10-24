@@ -83,6 +83,17 @@ class BotTests(unittest.TestCase):
         bot.carts.clear()
         bot.promos_applied.clear()
         bot.INFO["payment_methods"] = ["pay_cash", "pay_card", "pay_transfer", "pay_online"]
+        self._prices = {k: v["price"] for k, v in bot.ITEMS.items()}
+        self._card, self._phone, self._fee = dict(bot.INFO["card"]), bot.INFO["phone"], bot.INFO["delivery_fee"]
+
+    def tearDown(self):
+        bot.db.execute("DELETE FROM overrides")
+        bot.db.commit()
+        for iid, p in self._prices.items():
+            bot.ITEMS[iid]["price"] = p
+            bot.ITEMS[iid].pop("photo_override", None)
+        bot.INFO["card"] = self._card
+        bot.INFO["phone"], bot.INFO["delivery_fee"] = self._phone, self._fee
 
     def order_row(self, oid=1):
         return bot.db.execute("SELECT status, total, yandex_id FROM orders WHERE id=?", (oid,)).fetchone()
@@ -337,6 +348,64 @@ class BotTests(unittest.TestCase):
         self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM stoplist").fetchone()[0], 1)
         m = msg(uid=999)
         run(bot.stats(m))
+        m.answer.assert_not_awaited()
+
+    def test_admin_edits_prices_photos_card_inside_bot(self):
+        # навигация по меню настроек
+        c = cb("adm:prices", uid=111)
+        run(bot.admin_nav(c, St()))
+        self.assertIn("Выберите раздел", c.message.edit_text.call_args[0][0])
+        c = cb("adm:pc:fish", uid=111)
+        run(bot.admin_nav(c, St()))
+        self.assertIn("Сазан", str(c.message.edit_text.call_args[1]["reply_markup"]))
+        # цена
+        st = St()
+        run(bot.admin_nav(cb("adm:p:sazan", uid=111), st))
+        self.assertEqual(st.d["kind"], "price")
+        m = msg("abc", uid=111)
+        run(bot.admin_save(m, st))
+        self.assertIn("числом", m.answer.call_args[0][0])
+        run(bot.admin_save(msg("150 000", uid=111), st))
+        self.assertEqual(bot.ITEMS["sazan"]["price"], 150000)
+        self.assertEqual(bot.db.execute("SELECT value FROM overrides WHERE key='price:sazan'").fetchone()[0], "150000")
+        bot.carts[5] = {"sazan": 1}
+        self.assertEqual(bot.cart_text(5)[1], 150000)
+        # фото
+        st = St()
+        run(bot.admin_nav(cb("adm:f:oliv", uid=111), st))
+        run(bot.admin_save(msg("нет фото", uid=111), st))
+        self.assertNotIn("photo_override", bot.ITEMS["oliv"])
+        run(bot.admin_save(msg(photo=[MagicMock(file_id="NEWFID")], uid=111), st))
+        self.assertEqual(bot.photo_of(bot.ITEMS["oliv"]), "NEWFID")
+        # карта и контакты
+        st = St()
+        run(bot.admin_nav(cb("adm:s:card_number", uid=111), st))
+        m = msg("1234", uid=111)
+        run(bot.admin_save(m, st))
+        self.assertIn("16 цифр", m.answer.call_args[0][0])
+        run(bot.admin_save(msg("9860 1234 5678 9012", uid=111), st))
+        self.assertEqual(bot.INFO["card"]["number"], "9860 1234 5678 9012")
+        st = St()
+        run(bot.admin_nav(cb("adm:s:delivery_fee", uid=111), st))
+        run(bot.admin_save(msg("15000", uid=111), st))
+        self.assertEqual(bot.INFO["delivery_fee"], 15000)
+        # новая карта попадает клиенту при оплате
+        bot.carts[5] = {"sazan": 1}
+        st = St({"kind": "pickup", "address": "x"})
+        c = cb("pay:pay_transfer")
+        run(bot.order_pay(c, st))
+        self.assertIn("9860 1234 5678 9012", c.message.answer.call_args[0][0])
+        # переживает перезапуск
+        bot.ITEMS["sazan"]["price"] = 1
+        for k, v in bot.db.execute("SELECT key, value FROM overrides").fetchall():
+            bot.apply_override(k, v)
+        self.assertEqual(bot.ITEMS["sazan"]["price"], 150000)
+        # чужим нельзя
+        c = cb("adm:prices", uid=999)
+        run(bot.admin_nav(c, St()))
+        self.assertTrue(c.answer.call_args[1].get("show_alert"))
+        m = msg("/settings", uid=999)
+        run(bot.admin_settings(m, St()))
         m.answer.assert_not_awaited()
 
     def test_admin_management(self):
