@@ -60,5 +60,19 @@ class T(unittest.TestCase):
         self.assertFalse(bot.is_admin(1))
 
 
+
+
+class Seed(unittest.TestCase):
+    def test_seed_once(self):
+        s = Store()
+        self.assertTrue(s.seed_defaults())
+        self.assertEqual(len(s.products()), 15)
+        s.remove_product(s.products()[0]["id"])
+        self.assertFalse(s.seed_defaults())
+        self.assertEqual(len(s.products()), 14)
+        s.add_product("Гумма", 7000)
+        self.assertEqual([p["price"] for p in s.products() if p["name"] == "Гумма"], [7000])
+
+
 if __name__ == "__main__":
     unittest.main()

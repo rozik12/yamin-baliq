@@ -18,6 +18,7 @@ from store import Store, day_start, money, now, timedelta
 
 ADMINS = {int(x) for x in os.getenv("ADMIN_IDS", "1755207256,8219891075").replace(" ", "").split(",") if x}
 store = Store(os.getenv("DB_PATH", "pirojki.db"))
+store.seed_defaults()
 router = Router()
 
 B_SALE, B_MADE, B_MINE, B_UNDO = "💰 Продажа", "🥟 Произведено", "📋 Мои записи", "↩️ Отменить последнюю"
@@ -27,7 +28,6 @@ B_WORKERS, B_PRODUCTS, B_INVITE, B_EXPORT = "👥 Работники", "🧁 Т�
 
 class Add(StatesGroup):
     product = State()
-    qty = State()
     worker = State()
 
 
@@ -58,7 +58,8 @@ def fmt_summary(title, s):
     if s["sold"]:
         out.append("💰 Продано:")
         out += [f"  • {n}: {q} шт" for n, q in sorted(s["sold"].items())]
-        out.append(f"Выручка: <b>{money(s['revenue'])}</b>")
+        if s["revenue"]:
+            out.append(f"Выручка: <b>{money(s['revenue'])}</b>")
     else:
         out.append("Продаж пока нет.")
     if s["made"]:
@@ -92,79 +93,92 @@ async def start(m: Message, state: FSMContext):
     await m.answer(f"Привет, {m.from_user.first_name}! Вы — {role}.", reply_markup=menu(uid))
 
 
-async def pick_product(m: Message, state: FSMContext, kind):
-    ps = store.products()
-    if not ps:
-        await m.answer("Список товаров пуст. Администратор должен добавить товары (🧁 Товары)." if not is_admin(m.from_user.id)
-                       else "Список товаров пуст. Нажмите 🧁 Товары и добавьте.")
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-        text=f"{p['name']} — {money(p['price'])}" if kind == "sale" else p["name"], callback_data=f"p:{kind}:{p['id']}")]
-        for p in ps])
-    await m.answer("Что " + ("продано?" if kind == "sale" else "произведено?"), reply_markup=kb)
+def cart_kb(kind, cart):
+    rows = []
+    for p in store.products():
+        n = cart.get(str(p["id"]), 0)
+        rows.append([InlineKeyboardButton(text="➖", callback_data=f"c:{p['id']}:-"),
+                     InlineKeyboardButton(text=f"{p['name']}: {n}" if n else p["name"], callback_data="noop"),
+                     InlineKeyboardButton(text="➕", callback_data=f"c:{p['id']}:+")])
+    total = sum(cart.values())
+    rows.append([InlineKeyboardButton(text=f"✅ Записать ({total} шт)" if total else "Выберите товары ➕", callback_data="cdone"),
+                 InlineKeyboardButton(text="✖️ Отмена", callback_data="ccancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def open_cart(m: Message, state: FSMContext, kind):
+    if not store.products():
+        return await m.answer("Список товаров пуст. Нажмите 🧁 Товары и добавьте." if is_admin(m.from_user.id)
+                              else "Список товаров пуст. Попросите администратора добавить товары.")
+    await state.clear()
+    await state.update_data(kind=kind, cart={})
+    await m.answer(("💰 Что продано? Нажимайте ➕ у каждого товара" if kind == "sale" else
+                    "🥟 Что произведено? Нажимайте ➕ у каждого товара") + ", потом «Записать».", reply_markup=cart_kb(kind, {}))
 
 
 @router.message(F.text == B_SALE)
 async def sale(m: Message, state: FSMContext):
     if allowed(m.from_user.id):
-        await state.clear()
-        await pick_product(m, state, "sale")
+        await open_cart(m, state, "sale")
 
 
 @router.message(F.text == B_MADE)
 async def made(m: Message, state: FSMContext):
     if allowed(m.from_user.id):
-        await state.clear()
-        await pick_product(m, state, "made")
+        await open_cart(m, state, "made")
 
 
-@router.callback_query(F.data.startswith("p:"))
-async def chose_product(c: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "noop")
+async def noop(c: CallbackQuery):
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("c:"))
+async def cart_tap(c: CallbackQuery, state: FSMContext):
     if not allowed(c.from_user.id):
         return await c.answer()
-    _, kind, pid = c.data.split(":")
-    row = [InlineKeyboardButton(text=str(n), callback_data=f"q:{kind}:{pid}:{n}") for n in (1, 2, 3, 5, 10)]
-    kb = InlineKeyboardMarkup(inline_keyboard=[row, [InlineKeyboardButton(text="✏️ Другое число", callback_data=f"o:{kind}:{pid}")]])
-    await c.message.edit_text("Сколько штук?", reply_markup=kb)
-    await c.answer()
-
-
-async def save(bot, user, kind, pid, qty):
-    rid = store.record(user.id, uname(user), kind, int(pid), qty)
-    if not rid:
-        return "Не удалось записать."
-    p = store.product(int(pid))
-    if kind == "sale":
-        return f"✅ Продано: {p['name']} × {qty} = {money(p['price'] * qty)}"
-    return f"✅ Произведено: {p['name']} × {qty}"
-
-
-@router.callback_query(F.data.startswith("q:"))
-async def chose_qty(c: CallbackQuery):
-    if not allowed(c.from_user.id):
-        return await c.answer()
-    _, kind, pid, n = c.data.split(":")
-    await c.message.edit_text(await save(c.bot, c.from_user, kind, pid, int(n)))
-    await c.answer()
-
-
-@router.callback_query(F.data.startswith("o:"))
-async def other_qty(c: CallbackQuery, state: FSMContext):
-    _, kind, pid = c.data.split(":")
-    await state.set_state(Add.qty)
-    await state.update_data(kind=kind, pid=pid)
-    await c.message.edit_text("Напишите число штук:")
-    await c.answer()
-
-
-@router.message(Add.qty)
-async def got_qty(m: Message, state: FSMContext):
-    t = (m.text or "").strip()
-    if not t.isdigit() or not 0 < int(t) <= 10000:
-        return await m.answer("Нужно число, например 12.")
     d = await state.get_data()
+    if "cart" not in d:
+        await c.message.edit_text("Список устарел. Нажмите кнопку «Продажа» или «Произведено» заново.")
+        return await c.answer()
+    _, pid, op = c.data.split(":")
+    cart = d["cart"]
+    n = cart.get(pid, 0) + (1 if op == "+" else -1)
+    if n > 0:
+        cart[pid] = min(n, 1000)
+    else:
+        cart.pop(pid, None)
+    await state.update_data(cart=cart)
+    await c.message.edit_reply_markup(reply_markup=cart_kb(d["kind"], cart))
+    await c.answer()
+
+
+@router.callback_query(F.data == "cdone")
+async def cart_done(c: CallbackQuery, state: FSMContext):
+    if not allowed(c.from_user.id):
+        return await c.answer()
+    d = await state.get_data()
+    cart = d.get("cart") or {}
+    if not cart:
+        return await c.answer("Сначала выберите товары ➕", show_alert=True)
     await state.clear()
-    await m.answer(await save(m.bot, m.from_user, d["kind"], d["pid"], int(t)), reply_markup=menu(m.from_user.id))
+    lines, total = [], 0
+    for pid, qty in cart.items():
+        if store.record(c.from_user.id, uname(c.from_user), d["kind"], int(pid), qty):
+            p = store.product(int(pid))
+            lines.append(f"• {p['name']} × {qty}")
+            total += p["price"] * qty
+    head = "✅ Продажа записана:" if d["kind"] == "sale" else "✅ Произведено записано:"
+    tail = f"\nСумма: {money(total)}" if d["kind"] == "sale" and total else ""
+    await c.message.edit_text(head + "\n" + "\n".join(lines) + tail)
+    await c.answer()
+
+
+@router.callback_query(F.data == "ccancel")
+async def cart_cancel(c: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await c.message.edit_text("Отменено.")
+    await c.answer()
 
 
 @router.message(F.text == B_UNDO)
@@ -247,9 +261,9 @@ async def products(m: Message, state: FSMContext):
     if not is_admin(m.from_user.id):
         return
     ps = store.products()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"❌ {p['name']} — {money(p['price'])}", callback_data=f"rp:{p['id']}")] for p in ps]
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"❌ {p['name']} — {money(p['price']) if p['price'] else 'цена не задана'}", callback_data=f"rp:{p['id']}")] for p in ps]
                               + [[InlineKeyboardButton(text="➕ Добавить товар", callback_data="addp")]])
-    await m.answer("Товары (нажмите, чтобы убрать):", reply_markup=kb)
+    await m.answer("Товары (нажмите ❌, чтобы убрать).\nЧтобы задать или изменить цену — «➕ Добавить товар» и напишите название и цену (название то же — цена обновится):", reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("rp:"))

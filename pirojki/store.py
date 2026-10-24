@@ -23,9 +23,25 @@ class Store:
         CREATE TABLE IF NOT EXISTS workers(id INTEGER PRIMARY KEY, name TEXT, active INTEGER DEFAULT 1, joined TEXT);
         CREATE TABLE IF NOT EXISTS invites(code TEXT PRIMARY KEY, used_by INTEGER);
         CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, price INTEGER, active INTEGER DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
         CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, user_id INTEGER, user_name TEXT,
             kind TEXT, product_id INTEGER, product TEXT, qty INTEGER, amount INTEGER);
         """)
+
+    DEFAULTS = ["Пирожки с мясом", "Пирожки с картошкой", "Пирожки с сосиской", "Гумма",
+                "Чебурек с мясом", "Чебурек с картошкой", "Чебурек со шпинатом",
+                "Кола 0,5", "Фанта 0,5", "Ice Tea 0,5", "Fuse Tea 0,5", "Мохито 0,5", "Royal 0,5",
+                "Вода без газа 0,5", "Вода без газа Sweet 0,5"]
+
+    def seed_defaults(self):
+        """Один раз при первом запуске: стартовый список товаров с ценой 0 (админ ставит цены сам)."""
+        if self.db.execute("SELECT 1 FROM meta WHERE k='seeded'").fetchone():
+            return False
+        for n in self.DEFAULTS:
+            self.db.execute("INSERT OR IGNORE INTO products(name,price,active) VALUES(?,0,1)", (n,))
+        self.db.execute("INSERT INTO meta(k,v) VALUES('seeded','1')")
+        self.db.commit()
+        return True
 
     # --- работники
     def new_invite(self):
