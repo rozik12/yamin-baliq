@@ -175,10 +175,22 @@ class BotTests(unittest.TestCase):
         self.assertIn("нет", m.answer.call_args[0][0])
 
     def test_min_order(self):
-        bot.carts[5] = {"luk": 1}
+        old = bot.INFO.get("min_order", 0)
+        bot.INFO["min_order"] = 50000
+        try:
+            bot.carts[5] = {"luk": 1}
+            c = cb("checkout")
+            run(bot.checkout(c, St()))
+            self.assertTrue(c.answer.call_args[1].get("show_alert"))
+        finally:
+            bot.INFO["min_order"] = old
+
+    def test_any_amount_allowed_by_default(self):
+        self.assertEqual(bot.INFO.get("min_order", 0), 0)
+        bot.carts[5] = {"luk": 1}  # самая дешёвая позиция, 7 000 сум
         c = cb("checkout")
         run(bot.checkout(c, St()))
-        self.assertTrue(c.answer.call_args[1].get("show_alert"))
+        c.message.answer.assert_awaited()
 
     # ---------- оформление заказа
     def make_order(self, method="pay_cash", kind="delivery", **extra):
