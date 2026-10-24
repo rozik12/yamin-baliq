@@ -545,7 +545,7 @@ async def order_kind(c: CallbackQuery, state: FSMContext):
 @router.message(Order.address, F.location)
 async def order_location(m: Message, state: FSMContext):
     loc = m.location
-    await state.update_data(address=f"📍 https://maps.google.com/?q={loc.latitude},{loc.longitude}",
+    await state.update_data(address=f"📍 {map_link(loc.latitude, loc.longitude)}",
                             lat=loc.latitude, lon=loc.longitude)
     await ask_comment(m, m.from_user.id, state)
 
@@ -578,6 +578,23 @@ async def got_comment(m: Message, state: FSMContext):
 async def skip_comment(c: CallbackQuery, state: FSMContext):
     await ask_phone(c.message, c.from_user.id, state)
     await c.answer()
+
+
+def map_link(lat, lon):
+    """Ссылка на точку в Яндекс Картах (в pt сначала долгота, потом широта)."""
+    return f"https://yandex.com/maps/?pt={lon},{lat}&z=17&l=map"
+
+
+async def send_client_location(bot, lat, lon, oid):
+    """Пересылает админам геолокацию клиента точкой на карте."""
+    if lat is None or lon is None:
+        return
+    for a in all_admins():
+        try:
+            await bot.send_message(a, f"📍 Локация клиента (заказ №{oid}):\n{map_link(lat, lon)}")
+            await bot.send_location(a, float(lat), float(lon))
+        except Exception:
+            logging.exception("location send failed")
 
 
 def phone_of(m: Message):
@@ -617,6 +634,7 @@ async def begin_transfer(target, user, state):
     b.button(text="❌ Отменить заказ", callback_data=f"ord:{oid}:no")
     await notify_admins(target.bot, f"🛒 Заказ №{oid} сформирован, ждём оплату переводом ({AWAIT_MINUTES} мин)\n\n{full}",
                         reply_markup=b.as_markup())
+    await send_client_location(target.bot, d.get("lat"), d.get("lon"), oid)
     await state.set_state(Order.proof)
     holder = f"\n👤 {card['holder']}" if card.get("holder") else ""
     await target.answer(t(uid, "transfer_info", sum=money(total, lang_of(uid)), card=card["number"], holder=holder))
@@ -743,6 +761,8 @@ async def finalize(bot, user, state, method_key, paid, edit=None, proof=None):
     else:
         await bot.send_message(uid, msg, reply_markup=main_kb(uid))
     delivery = d.get("kind") == "delivery"
+    if not existing and delivery:
+        await send_client_location(bot, d.get("lat"), d.get("lon"), oid)
     if transfer:
         b = InlineKeyboardBuilder()
         b.button(text="✅ Оплата пришла", callback_data=f"ord:{oid}:paid")
@@ -1141,6 +1161,16 @@ async def show_order(m: Message, oid):
         b.button(text="✅ Выдан", callback_data=f"ord:{oid}:done")
     kb = b.adjust(1).as_markup()
     caption = f"📋 Заказ №{oid} · статус: {status}\n\n{text}"
+    dest = db.execute("SELECT dest FROM orders WHERE id=?", (oid,)).fetchone()
+    try:
+        point = json.loads(dest[0]) if dest and dest[0] else {}
+    except ValueError:
+        point = {}
+    if point.get("lat") is not None and point.get("lon") is not None and delivery:
+        try:
+            await m.answer_location(float(point["lat"]), float(point["lon"]))
+        except Exception:
+            logging.exception("card location failed")
     if proof:
         kind, _, file_id = proof.partition(":")
         send = m.answer_document if kind == "doc" else m.answer_photo

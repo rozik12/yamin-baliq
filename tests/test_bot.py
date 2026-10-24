@@ -49,6 +49,8 @@ def msg(text=None, uid=5, **kw):
     m.bot.send_photo = AsyncMock()
     m.bot.send_document = AsyncMock()
     m.bot.send_invoice = AsyncMock()
+    m.bot.send_location = AsyncMock()
+    m.answer_location = AsyncMock()
     return m
 
 
@@ -194,6 +196,31 @@ class BotTests(unittest.TestCase):
         self.assertIn(111, sent)
         dest = json.loads(bot.db.execute("SELECT dest FROM orders").fetchone()[0])
         self.assertEqual(dest["lat"], 41.3)
+
+    def test_yandex_maps_link_and_location_forwarded_to_admins(self):
+        self.assertEqual(bot.map_link(41.221122, 69.224447), "https://yandex.com/maps/?pt=69.224447,41.221122&z=17&l=map")
+        st = St()
+        loc = MagicMock(latitude=41.221122, longitude=69.224447)
+        run(bot.order_location(msg(location=loc), st))
+        self.assertIn("yandex.com/maps", st.d["address"])
+        self.assertNotIn("google", st.d["address"])
+        # оплата переводом: админу уходит точка сразу при формировании заказа
+        bot.INFO["payment_methods"] = ["pay_transfer"]
+        bot.carts[5] = {"sazan": 1}
+        st.d.update(kind="delivery", phone="+998")
+        m = msg("+998901112233")
+        run(bot.got_contact(m, st))
+        self.assertEqual(m.bot.send_location.call_args[0], (111, 41.221122, 69.224447))
+        # остальные способы: точка уходит при оформлении
+        bot.INFO["payment_methods"] = ["pay_cash"]
+        bot.carts[5] = {"sazan": 1}
+        c = cb("pay:pay_cash")
+        run(bot.order_pay(c, St({"kind": "delivery", "address": "x", "phone": "1", "lat": 41.3, "lon": 69.2})))
+        self.assertEqual(c.bot.send_location.call_args[0], (111, 41.3, 69.2))
+        # карточка заказа в панели тоже показывает точку
+        panel = msg(uid=111)
+        run(bot.show_order(panel, 2))
+        panel.answer_location.assert_awaited()
 
     def test_free_delivery_over_threshold(self):
         bot.carts[5] = {"sazan": 3}
