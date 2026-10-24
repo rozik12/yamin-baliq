@@ -568,6 +568,34 @@ class BotTests(unittest.TestCase):
         run(bot.send_welcome(m, 111))
         self.assertIn("Панель администратора", m.answer.call_args[0][0])
 
+    def test_reset_history_with_confirmation(self):
+        self.make_order("pay_cash", kind="pickup")
+        bot.db.execute("INSERT INTO bookings(user_id,text) VALUES(5,'x')")
+        bot.db.execute("INSERT INTO reviews VALUES(1,5,5)")
+        bot.db.execute("INSERT INTO promos VALUES('KEEP',5)")
+        bot.db.commit()
+        m = msg(uid=999)
+        run(bot.reset_ask(m))
+        m.answer.assert_not_awaited()
+        m = msg(uid=111)
+        run(bot.reset_ask(m))
+        self.assertIn("заказов 1", m.answer.call_args[0][0])
+        c = cb("reset:yes", uid=999)
+        run(bot.reset_do(c))
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM orders").fetchone()[0], 1)
+        c = cb("reset:no", uid=111)
+        run(bot.reset_do(c))
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM orders").fetchone()[0], 1)
+        bot.carts[5] = {"sazan": 1}
+        run(bot.reset_do(cb("reset:yes", uid=111)))
+        for table in ("orders", "bookings", "reviews"):
+            self.assertEqual(bot.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
+        self.assertEqual(bot.carts, {})
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM promos").fetchone()[0], 1)
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM users").fetchone()[0], 1)
+        self.make_order("pay_cash", kind="pickup")
+        self.assertEqual(bot.db.execute("SELECT id FROM orders").fetchone()[0], 1)  # нумерация с №1
+
     def test_admin_management(self):
         run(bot.claim_admin(msg(uid=222), MagicMock(args="WRONG")))
         self.assertFalse(bot.is_admin(222))

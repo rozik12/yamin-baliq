@@ -1312,6 +1312,38 @@ async def pause_btn(m: Message):
                        else "▶️ Приём заказов ВКЛЮЧЁН")
 
 
+@router.message(Command("resetdata"))
+async def reset_ask(m: Message):
+    if not is_admin(m.from_user.id):
+        return
+    n_o = db.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    n_b = db.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
+    n_r = db.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
+    b = InlineKeyboardBuilder()
+    b.button(text="🗑 Да, удалить всё", callback_data="reset:yes")
+    b.button(text="Отмена", callback_data="reset:no")
+    await m.answer(f"⚠️ Будет безвозвратно удалено: заказов {n_o}, броней {n_b}, оценок {n_r}, а также все корзины клиентов.\n"
+                   "Останутся: меню, цены, фото, карта, контакты, промокоды, администраторы и выбранный клиентами язык.\n"
+                   "Нумерация заказов начнётся с №1. Перед очисткой можно сохранить историю командой /export.",
+                   reply_markup=b.adjust(1).as_markup())
+
+
+@router.callback_query(F.data.startswith("reset:"))
+async def reset_do(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        return await c.answer("Нет доступа", show_alert=True)
+    if c.data != "reset:yes":
+        await c.message.edit_text("Отменено, ничего не удалено")
+        return await c.answer()
+    for table in ("orders", "bookings", "reviews"):
+        db.execute(f"DELETE FROM {table}")
+    db.commit()
+    carts.clear()
+    promos_applied.clear()
+    await c.message.edit_text("✅ История очищена. Бот как новый: следующий заказ будет №1.")
+    await c.answer()
+
+
 @router.message(Command("ban"))
 async def ban_cmd(m: Message, command: CommandObject):
     if not is_admin(m.from_user.id):
