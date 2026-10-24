@@ -12,7 +12,7 @@
    "uz": "Har kuni 11:00–23:00",
    "en": "Daily 11:00–23:00"
   },
-  "delivery_fee": 20000,
+  "delivery_fee": 0,
   "free_delivery_from": 300000,
   "min_order": 50000,
   "yandex": {

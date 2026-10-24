@@ -85,6 +85,7 @@ class BotTests(unittest.TestCase):
         bot.INFO["payment_methods"] = ["pay_cash", "pay_card", "pay_transfer", "pay_online"]
         self._prices = {k: v["price"] for k, v in bot.ITEMS.items()}
         self._card, self._phone, self._fee = dict(bot.INFO["card"]), bot.INFO["phone"], bot.INFO["delivery_fee"]
+        bot.INFO["delivery_fee"] = 20000  # тесты проверяют расчёт доставки; в menu.json сейчас 0
 
     def tearDown(self):
         bot.db.execute("DELETE FROM overrides")
@@ -198,6 +199,12 @@ class BotTests(unittest.TestCase):
         bot.carts[5] = {"sazan": 3}
         run(bot.order_pay(cb("pay:pay_card"), St({"kind": "delivery", "address": "A", "phone": "1"})))
         self.assertEqual(self.order_row()[1], 420000)
+
+    def test_no_delivery_fee_when_zero(self):
+        bot.INFO["delivery_fee"] = 0
+        _, c = self.make_order("pay_cash")
+        self.assertEqual(self.order_row()[1], 140000)
+        self.assertNotIn("Доставка", bot.db.execute("SELECT text FROM orders").fetchone()[0])
 
     def test_pickup_no_fee(self):
         self.make_order("pay_cash", kind="pickup")
