@@ -159,7 +159,7 @@ db.execute("CREATE TABLE IF NOT EXISTS reviews(order_id INTEGER PRIMARY KEY, use
 db.execute("CREATE TABLE IF NOT EXISTS stoplist(item_id TEXT PRIMARY KEY)")
 db.execute("CREATE TABLE IF NOT EXISTS admins(id INTEGER PRIMARY KEY)")
 db.execute("CREATE TABLE IF NOT EXISTS promos(code TEXT PRIMARY KEY, percent INT)")
-for col in ("items TEXT", "courier_id INT", "courier_name TEXT", "dest TEXT", "yandex_id TEXT"):
+for col in ("items TEXT", "courier_id INT", "courier_name TEXT", "dest TEXT", "yandex_id TEXT", "proof TEXT"):
     try:
         db.execute(f"ALTER TABLE orders ADD COLUMN {col}")
     except sqlite3.OperationalError:
@@ -625,7 +625,8 @@ async def finalize(bot, user, state, method_key, paid, edit=None, proof=None):
     await state.clear()
     transfer = method_key == "pay_transfer"
     if transfer:
-        db.execute("UPDATE orders SET status='verify' WHERE id=?", (oid,))
+        db.execute("UPDATE orders SET status='verify', proof=? WHERE id=?",
+                   (f"{proof[0]}:{proof[1]}" if proof else None, oid))
         db.commit()
     msg = (f"{t(uid, 'paid_ok') + chr(10) if paid else ''}{t(uid, 'verifying') + chr(10) if transfer else ''}"
            f"{t(uid, 'order_ok', n=oid)}\n\n{full}")
@@ -1012,11 +1013,11 @@ async def list_admins(m: Message):
 async def active_orders(m: Message):
     if not is_admin(m.from_user.id):
         return
-    rows = db.execute("SELECT id, total, status, text FROM orders WHERE status IN "
+    rows = db.execute("SELECT id, total, status, text, proof FROM orders WHERE status IN "
                       "('new','verify','accepted','cooking','delivering','dispatched') ORDER BY id").fetchall()
     if not rows:
         return await m.answer("Активных заказов нет. Новые заказы придут сюда сообщением с кнопками.")
-    for oid, total, status, text in rows:
+    for oid, total, status, text, proof in rows:
         delivery = "\n🚚 " in text
         b = InlineKeyboardBuilder()
         if status == "new":
@@ -1030,7 +1031,21 @@ async def active_orders(m: Message):
                 b.button(text=STEP_BTN[nxt], callback_data=f"ord:{oid}:{nxt}")
         elif status in ("delivering", "dispatched"):
             b.button(text="✅ Выдан", callback_data=f"ord:{oid}:done")
-        await m.answer(f"📋 Заказ №{oid} · статус: {status}\n\n{text}", reply_markup=b.adjust(1).as_markup())
+        kb = b.adjust(1).as_markup()
+        caption = f"📋 Заказ №{oid} · статус: {status}\n\n{text}"
+        if proof:
+            kind, _, file_id = proof.partition(":")
+            send = m.answer_document if kind == "doc" else m.answer_photo
+            try:
+                if len(caption) <= 1000:
+                    await send(file_id, caption=caption, reply_markup=kb)
+                else:
+                    await send(file_id, caption=f"🧾 Чек к заказу №{oid}")
+                    await m.answer(caption, reply_markup=kb)
+                continue
+            except Exception:
+                logging.exception("proof show failed")
+        await m.answer(caption, reply_markup=kb)
 
 
 @router.message(Command("export"))
