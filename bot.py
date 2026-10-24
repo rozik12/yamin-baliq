@@ -120,6 +120,13 @@ TXT = {
     "pay_notfound": {"ru": "оплата не найдена ❌ Позвоните нам:", "uz": "to'lov topilmadi ❌ Qo'ng'iroq qiling:",
                      "en": "payment not found ❌ Please call us:"},
     "s_verify": {"ru": "проверяем оплату", "uz": "to'lov tekshirilmoqda", "en": "checking payment"},
+    "s_awaiting": {"ru": "ждём оплату", "uz": "to'lov kutilmoqda", "en": "awaiting payment"},
+    "closed_msg": {"ru": "Приём заказов временно приостановлен. Попробуйте позже 🙏",
+                   "uz": "Buyurtma qabul qilish vaqtincha to'xtatilgan. Keyinroq urinib ko'ring 🙏",
+                   "en": "Order intake is temporarily paused. Please try again later 🙏"},
+    "expired": {"ru": "отменён: оплата не получена вовремя", "uz": "bekor qilindi: to'lov o'z vaqtida kelmadi",
+                "en": "cancelled: payment was not received in time"},
+    "from_rest": {"ru": "✉️ Сообщение от ресторана:", "uz": "✉️ Restorandan xabar:", "en": "✉️ Message from the restaurant:"},
     "b_hist": {"ru": "📜 Мои заказы", "uz": "📜 Buyurtmalarim", "en": "📜 My orders"},
     "h_empty": {"ru": "У вас пока нет заказов", "uz": "Hozircha buyurtmalaringiz yo'q", "en": "You have no orders yet"},
     "h_title": {"ru": "📜 Ваши последние заказы:", "uz": "📜 So'nggi buyurtmalaringiz:", "en": "📜 Your recent orders:"},
@@ -158,6 +165,7 @@ db.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, lang TEXT)"
 db.execute("CREATE TABLE IF NOT EXISTS reviews(order_id INTEGER PRIMARY KEY, user_id INT, rating INT)")
 db.execute("CREATE TABLE IF NOT EXISTS stoplist(item_id TEXT PRIMARY KEY)")
 db.execute("CREATE TABLE IF NOT EXISTS admins(id INTEGER PRIMARY KEY)")
+db.execute("CREATE TABLE IF NOT EXISTS banned(id INTEGER PRIMARY KEY)")
 db.execute("CREATE TABLE IF NOT EXISTS overrides(key TEXT PRIMARY KEY, value TEXT)")
 db.execute("CREATE TABLE IF NOT EXISTS promos(code TEXT PRIMARY KEY, percent INT)")
 for col in ("items TEXT", "courier_id INT", "courier_name TEXT", "dest TEXT", "yandex_id TEXT", "proof TEXT"):
@@ -194,6 +202,8 @@ def apply_override(key, v):
         INFO[key] = {"ru": v, "uz": v, "en": v}
     elif key == "phone":
         INFO["phone"] = v
+    elif key == "paused":
+        INFO["paused"] = v == "1"
     elif key in ("delivery_fee", "free_delivery_from", "min_order"):
         INFO[key] = int(v)
 
@@ -217,6 +227,9 @@ STOP_BTN = "🚫 Стоп-лист"
 EXPORT_BTN = "📥 Экспорт заказов"
 CLIENT_MODE_BTN = "👤 Режим клиента"
 ADMIN_MODE_BTN = "🛠 Режим админа"
+REPORT_BTN = "📈 Отчёт"
+PAUSE_BTN = "⏯ Приём заказов"
+AWAIT_MINUTES = 30
 client_mode: set[int] = set()  # админы, временно смотрящие бота глазами клиента
 
 
@@ -280,7 +293,7 @@ class Booking(StatesGroup):
 def main_kb(uid):
     b = ReplyKeyboardBuilder()
     if is_admin(uid) and uid not in client_mode:
-        for text in (ADMIN_BTN, SETTINGS_BTN, STATS_BTN, STOP_BTN, EXPORT_BTN, CLIENT_MODE_BTN):
+        for text in (ADMIN_BTN, SETTINGS_BTN, STATS_BTN, REPORT_BTN, STOP_BTN, PAUSE_BTN, EXPORT_BTN, CLIENT_MODE_BTN):
             b.button(text=text)
         return b.adjust(2).as_markup(resize_keyboard=True)
     for k in ("b_menu", "b_cart", "b_hist", "b_book", "b_info", "b_lang"):
@@ -337,6 +350,21 @@ async def send_welcome(m: Message, uid):
         await m.answer_photo(FSInputFile(logo), caption=caption, reply_markup=main_kb(uid))
     else:
         await m.answer(caption, reply_markup=main_kb(uid))
+
+
+def is_banned(uid):
+    return bool(db.execute("SELECT 1 FROM banned WHERE id=?", (uid,)).fetchone()) and not is_admin(uid)
+
+
+async def ban_guard(handler, event, data):
+    user = getattr(event, "from_user", None)
+    if user and is_banned(user.id):
+        return None
+    return await handler(event, data)
+
+
+router.message.outer_middleware(ban_guard)
+router.callback_query.outer_middleware(ban_guard)
 
 
 @router.message(CommandStart())
@@ -485,6 +513,8 @@ async def checkout(c: CallbackQuery, state: FSMContext):
     uid = c.from_user.id
     if not carts.get(uid):
         return await c.answer(t(uid, "empty"), show_alert=True)
+    if INFO.get("paused"):
+        return await c.answer(t(uid, "closed_msg"), show_alert=True)
     minimum = INFO.get("min_order", 0)
     if cart_text(uid)[1] < minimum:
         return await c.answer(t(uid, "min_err", sum=money(minimum, lang_of(uid))), show_alert=True)
@@ -580,7 +610,13 @@ async def begin_transfer(target, user, state):
     uid = user.id
     card = INFO["card"]
     d = await state.get_data()
-    _, total = build_order(uid, user, d, "pay_transfer", False)
+    db.execute("UPDATE orders SET status='cancelled' WHERE user_id=? AND status='awaiting'", (uid,))
+    oid, full, total = create_order_row(uid, user, d, "pay_transfer", False, status="awaiting")
+    await state.update_data(oid=oid)
+    b = InlineKeyboardBuilder()
+    b.button(text="❌ Отменить заказ", callback_data=f"ord:{oid}:no")
+    await notify_admins(target.bot, f"🛒 Заказ №{oid} сформирован, ждём оплату переводом ({AWAIT_MINUTES} мин)\n\n{full}",
+                        reply_markup=b.as_markup())
     await state.set_state(Order.proof)
     holder = f"\n👤 {card['holder']}" if card.get("holder") else ""
     await target.answer(t(uid, "transfer_info", sum=money(total, lang_of(uid)), card=card["number"], holder=holder))
@@ -666,19 +702,31 @@ async def dispatch_to_couriers(bot, oid, uid, order_text):
     await bot.send_message(uid, f"{t(uid, 'order_w')} №{oid}: {t(uid, 's_dispatched')} 🔎")
 
 
-async def finalize(bot, user, state, method_key, paid, edit=None, proof=None):
-    d = await state.get_data()
-    uid = user.id
-    lang = lang_of(uid)
+def create_order_row(uid, user, d, method_key, paid, status="new"):
     full, total = build_order(uid, user, d, method_key, paid)
-    cart = carts.get(uid, {})
-    cur = db.execute("INSERT INTO orders(user_id,text,total,items) VALUES(?,?,?,?)", (uid, full, total, json.dumps(cart)))
-    db.commit()
+    cur = db.execute("INSERT INTO orders(user_id,text,total,items,status) VALUES(?,?,?,?,?)",
+                     (uid, full, total, json.dumps(carts.get(uid, {})), status))
     oid = cur.lastrowid
     db.execute("UPDATE orders SET dest=? WHERE id=?", (json.dumps({
         "fullname": d.get("address", ""), "lat": d.get("lat"), "lon": d.get("lon"), "phone": d.get("phone", ""),
         "name": user.full_name, "comment": d.get("comment")}), oid))
     db.commit()
+    return oid, full, total
+
+
+async def finalize(bot, user, state, method_key, paid, edit=None, proof=None):
+    d = await state.get_data()
+    uid = user.id
+    lang = lang_of(uid)
+    existing = d.get("oid") if method_key == "pay_transfer" else None
+    if existing:
+        row = db.execute("SELECT status, text, total FROM orders WHERE id=?", (existing,)).fetchone()
+        if not row or row[0] != "awaiting":
+            await state.clear()
+            return await bot.send_message(uid, t(uid, "cart_gone"), reply_markup=main_kb(uid))
+        oid, full, total = existing, row[1], row[2]
+    else:
+        oid, full, total = create_order_row(uid, user, d, method_key, paid)
     carts.pop(uid, None)
     promos_applied.pop(uid, None)
     await state.clear()
@@ -826,7 +874,7 @@ async def history(m: Message):
         b = InlineKeyboardBuilder()
         if items:
             b.button(text=t(uid, "repeat"), callback_data=f"rep:{oid}")
-        if status == "new":
+        if status in ("new", "awaiting"):
             b.button(text=t(uid, "cancel_btn"), callback_data=f"cx:{oid}")
         await m.answer(f"№{oid} · {money(total, lang)} · {t(uid, 's_' + status)}", reply_markup=b.as_markup())
 
@@ -851,7 +899,7 @@ async def cancel_order(c: CallbackQuery):
     row = db.execute("SELECT status FROM orders WHERE id=? AND user_id=?", (oid, uid)).fetchone()
     if not row:
         return await c.answer()
-    if row[0] != "new":
+    if row[0] not in ("new", "awaiting"):
         return await c.answer(t(uid, "cancel_late") + INFO["phone"], show_alert=True)
     db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
     db.commit()
@@ -1068,44 +1116,208 @@ async def list_admins(m: Message):
         await m.answer("Администраторы: " + ", ".join(str(a) for a in sorted(all_admins())))
 
 
+ACTIVE = ("awaiting", "new", "verify", "accepted", "cooking", "delivering", "dispatched")
+
+
+async def show_order(m: Message, oid):
+    row = db.execute("SELECT id, total, status, text, proof FROM orders WHERE id=?", (oid,)).fetchone()
+    if not row:
+        return await m.answer("Заказ не найден")
+    oid, total, status, text, proof = row
+    delivery = "\n🚚 " in text
+    b = InlineKeyboardBuilder()
+    if status == "awaiting":
+        b.button(text="❌ Отменить заказ", callback_data=f"ord:{oid}:no")
+    elif status == "new":
+        b.button(text="✅ Принять", callback_data=f"ord:{oid}:ok")
+        b.button(text="❌ Отклонить", callback_data=f"ord:{oid}:no")
+    elif status == "verify":
+        b.button(text="✅ Оплата пришла", callback_data=f"ord:{oid}:paid")
+        b.button(text="❌ Оплаты нет", callback_data=f"ord:{oid}:nopay")
+    elif status in ("accepted", "cooking"):
+        for nxt in next_steps("cook" if status == "cooking" else "ok", delivery):
+            b.button(text=STEP_BTN[nxt], callback_data=f"ord:{oid}:{nxt}")
+    elif status in ("delivering", "dispatched"):
+        b.button(text="✅ Выдан", callback_data=f"ord:{oid}:done")
+    kb = b.adjust(1).as_markup()
+    caption = f"📋 Заказ №{oid} · статус: {status}\n\n{text}"
+    if proof:
+        kind, _, file_id = proof.partition(":")
+        send = m.answer_document if kind == "doc" else m.answer_photo
+        try:
+            if len(caption) <= 1000:
+                return await send(file_id, caption=caption, reply_markup=kb)
+            await send(file_id, caption=f"🧾 Чек к заказу №{oid}")
+        except Exception:
+            logging.exception("proof show failed")
+    await m.answer(caption, reply_markup=kb)
+
+
 @router.message(Command("orders"))
 @router.message(F.text == ADMIN_BTN)
 async def active_orders(m: Message):
     if not is_admin(m.from_user.id):
         return
-    rows = db.execute("SELECT id, total, status, text, proof FROM orders WHERE status IN "
-                      "('new','verify','accepted','cooking','delivering','dispatched') ORDER BY id").fetchall()
-    if not rows:
+    ids = [r[0] for r in db.execute(
+        f"SELECT id FROM orders WHERE status IN ({','.join('?' * len(ACTIVE))}) ORDER BY id", ACTIVE)]
+    if not ids:
         return await m.answer("Активных заказов нет. Новые заказы придут сюда сообщением с кнопками.")
-    for oid, total, status, text, proof in rows:
-        delivery = "\n🚚 " in text
+    for oid in ids:
+        await show_order(m, oid)
+
+
+@router.message(Command("order"))
+async def one_order(m: Message, command: CommandObject):
+    if not is_admin(m.from_user.id):
+        return
+    arg = (command.args or "").strip().lstrip("№#")
+    if not arg.isdigit():
+        return await m.answer("Использование: /order НОМЕР, например /order 12")
+    await show_order(m, int(arg))
+
+
+@router.message(Command("msg"))
+async def msg_client(m: Message, command: CommandObject):
+    """/msg НОМЕР_ЗАКАЗА текст — написать клиенту этого заказа от имени ресторана."""
+    if not is_admin(m.from_user.id):
+        return
+    parts = (command.args or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[0].lstrip("№#").isdigit():
+        return await m.answer("Использование: /msg НОМЕР_ЗАКАЗА текст сообщения")
+    row = db.execute("SELECT user_id FROM orders WHERE id=?", (int(parts[0].lstrip("№#")),)).fetchone()
+    if not row:
+        return await m.answer("Заказ не найден")
+    try:
+        await m.bot.send_message(row[0], f"{t(row[0], 'from_rest')}\n{parts[1]}")
+        await m.answer("Отправлено клиенту ✅")
+    except Exception:
+        await m.answer("Не удалось отправить: клиент заблокировал бота")
+
+
+PERIODS = {"today": ("Сегодня", "date(created)=date('now')"), "week": ("7 дней", "date(created)>=date('now','-6 days')"),
+           "month": ("30 дней", "date(created)>=date('now','-29 days')"), "all": ("Всё время", "1=1")}
+PAID_STATUSES = "('accepted','cooking','delivering','dispatched','done')"
+
+
+def report_text(period):
+    label, cond = PERIODS[period]
+    n, total = db.execute(f"SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders WHERE status IN {PAID_STATUSES} AND {cond}").fetchone()
+    done = db.execute(f"SELECT COUNT(*) FROM orders WHERE status='done' AND {cond}").fetchone()[0]
+    lost = db.execute(f"SELECT COUNT(*) FROM orders WHERE status IN ('rejected','cancelled') AND {cond}").fetchone()[0]
+    wait = db.execute("SELECT COUNT(*) FROM orders WHERE status IN ('awaiting','new','verify')").fetchone()[0]
+    counts: dict[str, int] = {}
+    for (items,) in db.execute(f"SELECT items FROM orders WHERE status IN {PAID_STATUSES} AND {cond}"):
+        for iid, q in json.loads(items or "{}").items():
+            counts[iid] = counts.get(iid, 0) + q
+    top = sorted(counts.items(), key=lambda x: -x[1])[:5]
+    top_txt = "\n".join(f"{n_}. {ITEMS[i]['name']['ru']} — {q}" for n_, (i, q) in enumerate(top, 1) if i in ITEMS) or "—"
+    bk = db.execute(f"SELECT COUNT(*) FROM bookings WHERE {cond}").fetchone()[0]
+    r = db.execute("SELECT ROUND(AVG(rating),1), COUNT(*) FROM reviews").fetchone()
+    users = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    avg = total // n if n else 0
+    return (f"📈 Отчёт: {label}\n\nПодтверждённых заказов: {n}\nВыручка: {money(total, 'ru')}\nСредний чек: {money(avg, 'ru')}\n"
+            f"Выдано: {done}\nОтклонено/отменено: {lost}\nОжидают решения сейчас: {wait}\nБроней: {bk}\n\n"
+            f"🔥 Популярные блюда:\n{top_txt}\n\n⭐ Оценка: {r[0] or '—'} ({r[1]})\n👥 Клиентов в боте: {users}")
+
+
+@router.message(Command("report"))
+@router.message(F.text == REPORT_BTN)
+async def report(m: Message, command: CommandObject = None):
+    if not is_admin(m.from_user.id):
+        return
+    arg = ((command.args if command else "") or "").strip().lower()
+    b = InlineKeyboardBuilder()
+    for key, (label, _) in PERIODS.items():
+        b.button(text=label, callback_data=f"rpt:{key}")
+    await m.answer(report_text(arg if arg in PERIODS else "today"), reply_markup=b.adjust(2).as_markup())
+
+
+@router.callback_query(F.data.startswith("rpt:"))
+async def report_period(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        return await c.answer("Нет доступа", show_alert=True)
+    key = c.data.split(":")[1]
+    if key in PERIODS:
         b = InlineKeyboardBuilder()
-        if status == "new":
-            b.button(text="✅ Принять", callback_data=f"ord:{oid}:ok")
-            b.button(text="❌ Отклонить", callback_data=f"ord:{oid}:no")
-        elif status == "verify":
-            b.button(text="✅ Оплата пришла", callback_data=f"ord:{oid}:paid")
-            b.button(text="❌ Оплаты нет", callback_data=f"ord:{oid}:nopay")
-        elif status in ("accepted", "cooking"):
-            for nxt in next_steps("cook" if status == "cooking" else "ok", delivery):
-                b.button(text=STEP_BTN[nxt], callback_data=f"ord:{oid}:{nxt}")
-        elif status in ("delivering", "dispatched"):
-            b.button(text="✅ Выдан", callback_data=f"ord:{oid}:done")
-        kb = b.adjust(1).as_markup()
-        caption = f"📋 Заказ №{oid} · статус: {status}\n\n{text}"
-        if proof:
-            kind, _, file_id = proof.partition(":")
-            send = m.answer_document if kind == "doc" else m.answer_photo
-            try:
-                if len(caption) <= 1000:
-                    await send(file_id, caption=caption, reply_markup=kb)
-                else:
-                    await send(file_id, caption=f"🧾 Чек к заказу №{oid}")
-                    await m.answer(caption, reply_markup=kb)
-                continue
-            except Exception:
-                logging.exception("proof show failed")
-        await m.answer(caption, reply_markup=kb)
+        for k, (label, _) in PERIODS.items():
+            b.button(text=label, callback_data=f"rpt:{k}")
+        try:
+            await c.message.edit_text(report_text(key), reply_markup=b.adjust(2).as_markup())
+        except Exception:
+            pass
+    await c.answer()
+
+
+def toggle_pause(paused=None):
+    new = (not INFO.get("paused")) if paused is None else paused
+    set_override("paused", "1" if new else "0")
+    return new
+
+
+@router.message(Command("pause"))
+async def pause_cmd(m: Message):
+    if is_admin(m.from_user.id):
+        toggle_pause(True)
+        await m.answer("⏸ Приём заказов приостановлен. Клиенты увидят сообщение. Возобновить: /resume")
+
+
+@router.message(Command("resume"))
+async def resume_cmd(m: Message):
+    if is_admin(m.from_user.id):
+        toggle_pause(False)
+        await m.answer("▶️ Приём заказов включён")
+
+
+@router.message(F.text == PAUSE_BTN)
+async def pause_btn(m: Message):
+    if is_admin(m.from_user.id):
+        paused = toggle_pause()
+        await m.answer("⏸ Приём заказов ПРИОСТАНОВЛЕН. Нажмите ту же кнопку, чтобы включить." if paused
+                       else "▶️ Приём заказов ВКЛЮЧЁН")
+
+
+@router.message(Command("ban"))
+async def ban_cmd(m: Message, command: CommandObject):
+    if not is_admin(m.from_user.id):
+        return
+    arg = (command.args or "").strip()
+    if not arg.isdigit():
+        return await m.answer("Использование: /ban ID_пользователя (число). Снять: /unban ID")
+    db.execute("INSERT OR IGNORE INTO banned(id) VALUES(?)", (int(arg),))
+    db.commit()
+    await m.answer(f"🚫 {arg} заблокирован: бот не отвечает ему")
+
+
+@router.message(Command("unban"))
+async def unban_cmd(m: Message, command: CommandObject):
+    if is_admin(m.from_user.id) and (command.args or "").strip().isdigit():
+        db.execute("DELETE FROM banned WHERE id=?", (int(command.args.strip()),))
+        db.commit()
+        await m.answer("✅ Разблокирован")
+
+
+async def expire_awaiting(bot):
+    """Отменяет заказы, за которые не прислали чек за AWAIT_MINUTES минут."""
+    rows = db.execute("SELECT id, user_id FROM orders WHERE status='awaiting' "
+                      f"AND created <= datetime('now','-{AWAIT_MINUTES} minutes')").fetchall()
+    for oid, uid in rows:
+        db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
+        db.commit()
+        try:
+            await bot.send_message(uid, f"{t(uid, 'order_w')} №{oid} {t(uid, 'expired')}")
+        except Exception:
+            pass
+        await notify_admins(bot, f"⌛ Заказ №{oid} отменён автоматически: чек не пришёл за {AWAIT_MINUTES} минут")
+    return len(rows)
+
+
+async def expire_loop(bot):
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await expire_awaiting(bot)
+        except Exception:
+            logging.exception("expire loop failed")
 
 
 def adm_home_kb():
@@ -1318,6 +1530,12 @@ async def contacts(m: Message):
 
 @router.message(Command("cancel"))
 async def cancel(m: Message, state: FSMContext):
+    d = await state.get_data()
+    oid = d.get("oid")
+    if oid and db.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone() == ("awaiting",):
+        db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
+        db.commit()
+        await notify_admins(m.bot, f"❌ Клиент отменил неоплаченный заказ №{oid}")
     await state.clear()
     await m.answer(t(m.from_user.id, "cancelled"), reply_markup=main_kb(m.from_user.id))
 
@@ -1329,6 +1547,7 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     poller = asyncio.create_task(yandex_poller(bot))
+    expirer = asyncio.create_task(expire_loop(bot))
     for a in all_admins():
         try:
             await bot.send_message(a, "🔄 Бот запущен. Кнопка «📋 Заказы (админ)» показывает активные заказы.", reply_markup=main_kb(a))

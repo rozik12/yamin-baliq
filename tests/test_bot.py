@@ -93,6 +93,8 @@ class BotTests(unittest.TestCase):
             bot.ITEMS[iid]["price"] = p
             bot.ITEMS[iid].pop("photo_override", None)
         bot.INFO["card"] = self._card
+        bot.INFO["paused"] = False
+        bot.db.execute("DELETE FROM banned")
         bot.INFO["phone"], bot.INFO["delivery_fee"] = self._phone, self._fee
 
     def order_row(self, oid=1):
@@ -226,7 +228,88 @@ class BotTests(unittest.TestCase):
         self.assertEqual(st.d["phone"], "+998901112233")
         c = cb("pay:pay_cash")
         run(bot.order_pay(c, st))
-        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM orders").fetchone()[0], 0)
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM orders WHERE status!='awaiting'").fetchone()[0], 0)
+
+    def test_admin_notified_immediately_when_order_formed(self):
+        bot.INFO["payment_methods"] = ["pay_transfer"]
+        bot.carts[5] = {"sazan": 1}
+        st = St({"kind": "delivery", "address": "A"})
+        m = msg("+998901112233")
+        run(bot.got_contact(m, st))
+        self.assertEqual(self.order_row()[0], "awaiting")
+        self.assertEqual(m.bot.send_message.call_args[0][0], 111)
+        self.assertIn("сформирован", m.bot.send_message.call_args[0][1])
+        self.assertEqual(st.d["oid"], 1)
+        # чек приходит -> тот же заказ, без дубля
+        p = msg(photo=[MagicMock(file_id="F")])
+        run(bot.got_proof_photo(p, st))
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM orders").fetchone()[0], 1)
+        self.assertEqual(self.order_row()[0], "verify")
+
+    def test_awaiting_order_cancel_and_expiry(self):
+        bot.INFO["payment_methods"] = ["pay_transfer"]
+        bot.carts[5] = {"sazan": 1}
+        st = St({"kind": "pickup"})
+        run(bot.got_contact(msg("+998"), st))
+        m = msg("/cancel")
+        run(bot.cancel(m, st))
+        self.assertEqual(self.order_row()[0], "cancelled")
+        # просрочка
+        bot.carts[5] = {"sazan": 1}
+        run(bot.got_contact(msg("+998"), St({"kind": "pickup"})))
+        bot.db.execute("UPDATE orders SET created=datetime('now','-31 minutes') WHERE status='awaiting'")
+        b = MagicMock(send_message=AsyncMock())
+        self.assertEqual(run(bot.expire_awaiting(b)), 1)
+        self.assertEqual(self.order_row(2)[0], "cancelled")
+        # чек после отмены не создаёт заказ
+        p = msg(photo=[MagicMock(file_id="F")])
+        run(bot.got_proof_photo(p, St({"kind": "pickup", "oid": 2})))
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM orders WHERE status='verify'").fetchone()[0], 0)
+
+    def test_new_admin_tools(self):
+        self.make_order("pay_cash", kind="pickup")
+        run(bot.admin_decision(cb("ord:1:ok", uid=111)))
+        run(bot.admin_decision(cb("ord:1:done", uid=111)))
+        m = msg(uid=111)
+        run(bot.report(m, MagicMock(args="all")))
+        text = m.answer.call_args[0][0]
+        self.assertIn("Подтверждённых заказов: 1", text)
+        self.assertIn("Лосось" if "Лосось" in text else "Сазан", text)
+        c = cb("rpt:week", uid=111)
+        run(bot.report_period(c))
+        self.assertIn("7 дней", c.message.edit_text.call_args[0][0])
+        m = msg(uid=111)
+        run(bot.one_order(m, MagicMock(args="1")))
+        self.assertIn("Заказ №1", m.answer.call_args[0][0])
+        m = msg(uid=111)
+        run(bot.msg_client(m, MagicMock(args="1 Заказ будет через 20 минут")))
+        self.assertIn("Заказ будет через 20 минут", m.bot.send_message.call_args[0][1])
+        # пауза приёма заказов
+        run(bot.pause_cmd(msg(uid=111)))
+        bot.carts[5] = {"sazan": 1}
+        c = cb("checkout")
+        run(bot.checkout(c, St()))
+        self.assertTrue(c.answer.call_args[1].get("show_alert"))
+        run(bot.resume_cmd(msg(uid=111)))
+        self.assertFalse(bot.INFO["paused"])
+        # блокировка
+        run(bot.ban_cmd(msg(uid=111), MagicMock(args="5")))
+        self.assertTrue(bot.is_banned(5))
+        called = []
+
+        async def handler(e, d):
+            called.append(1)
+        ev = MagicMock()
+        ev.from_user.id = 5
+        run(bot.ban_guard(handler, ev, {}))
+        self.assertEqual(called, [])
+        run(bot.unban_cmd(msg(uid=111), MagicMock(args="5")))
+        run(bot.ban_guard(handler, ev, {}))
+        self.assertEqual(called, [1])
+        # чужим нельзя
+        m = msg(uid=999)
+        run(bot.report(m, MagicMock(args="all")))
+        m.answer.assert_not_awaited()
 
     def test_transfer_payment_full_flow(self):
         bot.carts[5] = {"sazan": 1}
