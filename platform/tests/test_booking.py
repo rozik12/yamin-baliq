@@ -2,7 +2,7 @@ import datetime as dt
 import unittest
 from unittest.mock import MagicMock
 
-from helpers import St, buttons, cb, cmd, labels, msg, mkbot, run
+from helpers import St, admin_pages, buttons, cb, cmd, labels, msg, mkbot, run
 
 import core  # noqa: E402
 from modules import booking as bk  # noqa: E402
@@ -14,8 +14,8 @@ class BookingTests(unittest.TestCase):
     def setUp(self):
         for t in ("services", "bookings", "users", "tenants", "tenant_admins", "user_tenant", "settings"):
             core.db.execute(f"DELETE FROM {t}")
-        core.db.execute("INSERT INTO tenants VALUES('a','Салон А','booking',1)")
-        core.db.execute("INSERT INTO tenants VALUES('b','Салон Б','booking',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('a','Салон А','booking',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('b','Салон Б','booking',1)")
         core.db.executemany("INSERT INTO tenant_admins VALUES(?,?)", [("a", ADM_A), ("b", ADM_B)])
         core.db.executemany("INSERT INTO user_tenant VALUES(?,?)", [(ADM_A, "a"), (ADM_B, "b"), (CLI_A, "a"), (CLI_B, "b"), (7, "a")])
         core.db.executemany("INSERT INTO users VALUES(?,?)", [(u, "ru") for u in (ADM_A, ADM_B, CLI_A, CLI_B, 7)])
@@ -151,7 +151,7 @@ class BookingTests(unittest.TestCase):
         self.assertEqual(self.count("cancelled"), 1)
 
     def test_settings_available_for_booking_admin(self):
-        self.assertIn(core.SETTINGS_BTN, labels(core.main_kb, ADM_A))
+        self.assertIn(core.SETTINGS_BTN, admin_pages(ADM_A)[1])
         m = msg(uid=ADM_A)
         run(core.settings_menu(m))
         data = buttons(m.answer.call_args[1]["reply_markup"])

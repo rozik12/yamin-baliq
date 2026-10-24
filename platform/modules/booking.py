@@ -49,7 +49,13 @@ def cleanup(slug):
     db.commit()
 
 
-core.register_module("booking", ["b_book", "b_mybook"], [ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES, ADM_REPORT], cleanup=cleanup)
+core.register_module("booking", ["b_book", "b_mybook"], [ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES], cleanup=cleanup, more_labels=[ADM_REPORT])
+core.register_help("booking", "💇 Запись на приём", [
+    "Нажмите «➕ Услуга»: название, сколько минут длится и цена.",
+    "Откройте «⚙️ Ещё» → «⚙️ Настройки»: время начала и конца работы.",
+    "Нажмите «⚙️ Ещё» → «🔗 Ссылка и QR» и покажите клиентам.",
+    "Новые записи приходят сюда. Нажмите «Подтвердить»: клиент получит сообщение, а за час до визита придёт напоминание.",
+])
 db.execute("CREATE TABLE IF NOT EXISTS services(id INTEGER PRIMARY KEY, tenant TEXT, name TEXT, minutes INT, price INT, active INTEGER DEFAULT 1)")
 db.execute("CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, service_id INT, start TEXT, name TEXT, phone TEXT, status TEXT DEFAULT 'pending', reminded INTEGER DEFAULT 0, created TEXT DEFAULT CURRENT_TIMESTAMP)")
 db.commit()

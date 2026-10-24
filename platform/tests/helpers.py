@@ -72,3 +72,14 @@ def labels(kb_fn, uid):
 
 def buttons(markup):
     return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+
+def admin_pages(uid):
+    """Кнопки админа: (первая страница, вторая страница «Ещё»)."""
+    import core
+    core.more_page.discard(uid)
+    first = labels(core.main_kb, uid)
+    core.more_page.add(uid)
+    second = labels(core.main_kb, uid)
+    core.more_page.discard(uid)
+    return first, second

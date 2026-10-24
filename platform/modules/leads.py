@@ -38,7 +38,12 @@ def cleanup(slug):
     db.commit()
 
 
-core.register_module("leads", ["b_lead", "b_myleads"], [ADM_LEADS, ADM_REPORT], cleanup=cleanup)
+core.register_module("leads", ["b_lead", "b_myleads"], [ADM_LEADS], cleanup=cleanup, more_labels=[ADM_REPORT])
+core.register_help("leads", "📝 Приём заявок", [
+    "Откройте «⚙️ Ещё» → «⚙️ Настройки»: укажите телефон и темы заявки через запятую (например: Квартира, Дом, Офис).",
+    "Нажмите «⚙️ Ещё» → «🔗 Ссылка и QR» и покажите клиентам.",
+    "Новые заявки приходят сюда: «В работу», «Выполнена», «✉️ Написать клиенту». Клиент получает уведомления сам.",
+])
 db.execute("CREATE TABLE IF NOT EXISTS leads(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, topic TEXT, name TEXT, phone TEXT, message TEXT, status TEXT DEFAULT 'new', created TEXT DEFAULT CURRENT_TIMESTAMP)")
 db.commit()
 

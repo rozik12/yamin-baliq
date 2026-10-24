@@ -31,7 +31,11 @@ def cleanup(slug):
     db.commit()
 
 
-core.register_module("support", ["b_faq", "b_support"], [ADM_ADDFAQ, ADM_FAQ, ADM_TICKETS], cleanup=cleanup)
+core.register_module("support", ["b_faq", "b_support"], [ADM_TICKETS], cleanup=cleanup, more_labels=[ADM_ADDFAQ, ADM_FAQ])
+core.register_help("support", "🆘 Поддержка", [
+    "Откройте «⚙️ Ещё» → «➕ Вопрос» и добавьте частые вопросы с ответами.",
+    "Обращения клиентов приходят сюда. Нажмите «✍️ Ответить»: клиент получит ответ в боте.",
+])
 db.execute("CREATE TABLE IF NOT EXISTS faq(id INTEGER PRIMARY KEY, tenant TEXT, q TEXT, a TEXT)")
 db.execute("CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, text TEXT, status TEXT DEFAULT 'open')")
 db.commit()

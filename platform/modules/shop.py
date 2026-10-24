@@ -79,7 +79,14 @@ def cleanup(slug):
     db.commit()
 
 
-core.register_module("shop", ["b_catalog", "b_cart", "b_orders"], [ADM_ORDERS, ADM_ADDP, ADM_CATALOG, ADM_REPORT, ADM_PROMO], cleanup=cleanup)
+core.register_module("shop", ["b_catalog", "b_cart", "b_orders"], [ADM_ORDERS, ADM_ADDP, ADM_CATALOG], cleanup=cleanup, more_labels=[ADM_REPORT, ADM_PROMO])
+core.register_help("shop", "🛍 Магазин, кафе, доставка", [
+    "Нажмите «➕ Товар» и добавьте первое блюдо или товар: раздел, название, цена, фото.",
+    "Откройте «⚙️ Ещё» → «⚙️ Настройки»: укажите телефон, номер карты для оплаты и стоимость доставки.",
+    "Нажмите «⚙️ Ещё» → «🔗 Ссылка и QR» и покажите клиентам.",
+    "Новые заказы приходят сюда сообщением. Нажмите «Принять», потом «Готов» и «Выдан»: клиент получает уведомления сам.",
+    "Цену или фото можно поменять в «🗂 Каталог». Скидки: «⚙️ Ещё» → «🎟 Промокоды».",
+])
 db.execute("CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, tenant TEXT, category TEXT, name TEXT, price INT, descr TEXT, photo TEXT, active INTEGER DEFAULT 1)")
 db.execute("CREATE TABLE IF NOT EXISTS shop_orders(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, items TEXT, total INT, status TEXT DEFAULT 'new', text TEXT, proof TEXT, dest TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP)")
 db.execute("CREATE TABLE IF NOT EXISTS shop_promos(tenant TEXT, code TEXT, percent INT, PRIMARY KEY(tenant, code))")

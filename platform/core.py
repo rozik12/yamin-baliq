@@ -10,6 +10,11 @@ import os
 import secrets
 import sqlite3
 
+try:
+    import segno
+except ImportError:  # QR необязателен для работы
+    segno = None
+
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -24,6 +29,10 @@ OWNERS = {int(x) for x in os.environ.get("ADMIN_CHAT_ID", "").replace(";", ",").
 SPACES_BTN = "🏢 Пространства"
 SETTINGS_BTN = "⚙️ Настройки"
 NEW_SPACE_BTN = "➕ Новое заведение"
+MORE_BTN, BACK_BTN = "⚙️ Ещё", "⬅️ Назад"
+HELP_BTN, LINK_BTN, STAFF_BTN = "❓ Помощь", "🔗 Ссылка и QR", "👥 Сотрудник"
+CREATE_BTN = "🚀 Создать бота для моего бизнеса"
+SELF_SIGNUP = os.environ.get("SELF_SIGNUP", "1") == "1"
 STATS_BTN = "📊 Статистика"
 EXPORT_BTN = "📥 Экспорт"
 
@@ -86,8 +95,17 @@ def register_wizard(name, steps, done):
     WIZARDS[name] = {"steps": steps, "done": done}
 
 
-def register_module(name, client_keys, admin_labels, cleanup=None):
-    MODULE_BUTTONS[name] = {"client": list(client_keys), "admin": list(admin_labels)}
+HELP: dict[str, tuple] = {}
+more_page: set[int] = set()  # админы, у которых открыта вторая страница кнопок
+
+
+def register_help(module, title, steps):
+    HELP[module] = (title, list(steps))
+
+
+def register_module(name, client_keys, admin_labels, cleanup=None, more_labels=()):
+    """admin_labels: главные кнопки админа; more_labels: редкие кнопки под «⚙️ Ещё»."""
+    MODULE_BUTTONS[name] = {"client": list(client_keys), "admin": list(admin_labels), "more": list(more_labels)}
     if cleanup:
         CLEANUPS.append(cleanup)
 
@@ -177,17 +195,21 @@ def main_kb(uid):
     mods = modules_of(uid)
     if is_admin(uid):
         labels = []
-        for mod in mods:
-            labels += [x for x in MODULE_BUTTONS[mod]["admin"] if x not in labels]
-        if any(d[2] & set(mods) for d in SETTING_DEFS.values()):
-            labels.append(SETTINGS_BTN)
-        if mods:
-            labels += [STATS_BTN, EXPORT_BTN]
+        if mods and uid in more_page:
+            for mod in mods:
+                labels += [x for x in MODULE_BUTTONS[mod]["more"] if x not in labels]
+            if any(d[2] & set(mods) for d in SETTING_DEFS.values()):
+                labels.append(SETTINGS_BTN)
+            labels += [STATS_BTN, EXPORT_BTN, LINK_BTN, STAFF_BTN, HELP_BTN, BACK_BTN]
+        else:
+            for mod in mods:
+                labels += [x for x in MODULE_BUTTONS[mod]["admin"] if x not in labels]
+            if mods:
+                labels.append(MORE_BTN)
+            if is_owner(uid):
+                labels += [NEW_SPACE_BTN, SPACES_BTN]
         for label in labels:
             b.button(text=label)
-        if is_owner(uid):
-            b.button(text=NEW_SPACE_BTN)
-            b.button(text=SPACES_BTN)
     else:
         keys = []
         for mod in mods:
@@ -212,6 +234,16 @@ async def ban_guard(handler, event, data):
 
 router.message.outer_middleware(ban_guard)
 router.callback_query.outer_middleware(ban_guard)
+
+
+WELCOME_NEW = ("👋 Здравствуйте!\n\nЗдесь можно за 2 минуты создать Telegram-бота для своего бизнеса: меню и заказы, запись клиентов, "
+               "приём заявок или подбор сотрудников.\n\nЕсли вы клиент, откройте бот по ссылке или QR-коду вашего заведения.")
+
+
+def create_kb():
+    b = InlineKeyboardBuilder()
+    b.button(text=CREATE_BTN, callback_data="signup")
+    return b.as_markup()
 
 
 def lang_kb():
@@ -262,7 +294,7 @@ async def start(m: Message, state: FSMContext, command: CommandObject):
                      "и выдаст ссылки для клиентов и администратора.\n«🏢 Пространства» показывает все заведения.")
         return await m.answer(text, reply_markup=main_kb(uid))
     if not tenant_of(uid):
-        return await m.answer(t(uid, "no_space"))
+        return await m.answer(WELCOME_NEW, reply_markup=create_kb() if SELF_SIGNUP else None)
     if db.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone() is None:
         return await m.answer("Tilni tanlang / Выберите язык / Choose your language", reply_markup=lang_kb())
     await m.answer(t(uid, "welcome", brand=brand_of(uid)), reply_markup=main_kb(uid))
@@ -323,35 +355,6 @@ async def new_space(m: Message, command: CommandObject):
     db.execute("INSERT INTO tenants(slug, name, module) VALUES(?,?,?)", (slug, name, module))
     db.commit()
     await m.answer(f"✅ Заведение «{name}» ({module}) создано.\n\n" + await space_links(m.bot, slug, new_invite(slug)))
-
-
-PRESETS = [("🛍 Магазин / кафе / доставка", "shop"), ("💇 Запись на приём", "booking"), ("📝 Заявки", "leads"),
-           ("👔 Рекрутинг", "recruiter"), ("🆘 Поддержка и FAQ", "support"), ("🛍 Магазин + 🆘 Поддержка", "shop,support"),
-           ("💇 Запись + 🆘 Поддержка", "booking,support"), ("📝 Заявки + 🆘 Поддержка", "leads,support")]
-
-
-async def space_created(bot, uid, ans, ctx):
-    slug, module, name = ans["slug"], ans["module"], ans["name"]
-    db.execute("INSERT INTO tenants(slug, name, module) VALUES(?,?,?)", (slug, name, module))
-    db.commit()
-    set_user_tenant(uid, slug)
-    await bot.send_message(uid, f"✅ Заведение «{name}» создано ({module}). Вы вошли в него: кнопки внизу управляют им.\n\n"
-                           + await space_links(bot, slug, new_invite(slug)), reply_markup=main_kb(uid))
-
-
-register_wizard("newspace", [
-    {"key": "name", "prompt": "Как называется заведение? (увидят клиенты)", "type": "text"},
-    {"key": "slug", "prompt": "Короткое имя для ссылки: латиница, цифры, - или _ (например: vlad)", "type": "slug",
-     "check": lambda v, ctx: get_tenant(v) is None},
-    {"key": "module", "prompt": "Какой тип бизнеса?", "type": "choice",
-     "choices": lambda uid, a, c: [(label, mod) for label, mod in PRESETS if all(x in MODULE_BUTTONS for x in mod.split(","))]},
-], space_created)
-
-
-@router.message(F.text == NEW_SPACE_BTN)
-async def new_space_button(m: Message, state: FSMContext):
-    if is_owner(m.from_user.id):
-        await start_wizard(m, state, "newspace", m.from_user.id)
 
 
 @router.message(Command("newinvite"))
@@ -638,7 +641,7 @@ async def unknown_message(m: Message, state: FSMContext):
     if is_admin(uid) and not tenant_of(uid):
         return await m.answer("Нажмите «➕ Новое заведение» или «🏢 Пространства». Нужна подсказка: /start", reply_markup=main_kb(uid))
     if not tenant_of(uid):
-        return await m.answer(t(uid, "no_space"))
+        return await m.answer(WELCOME_NEW, reply_markup=create_kb() if SELF_SIGNUP else None)
     await m.answer(t(uid, "use_menu"), reply_markup=main_kb(uid))
 
 
@@ -868,6 +871,163 @@ async def settings_pick(c: CallbackQuery, state: FSMContext):
     label, typ, _ = SETTING_DEFS[key]
     await start_wizard(c.message, state, f"setting_{typ}", uid, {"tenant": tenant, "key": key, "label": label})
     await c.answer()
+
+
+# ====================== простое подключение бизнеса ======================
+try:
+    db.execute("ALTER TABLE tenants ADD COLUMN created_by INTEGER")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+
+TRANSLIT = dict(zip("абвгдежзийклмнопрстуфхцчшщыэюя", ["a", "b", "v", "g", "d", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t",
+                                                       "u", "f", "h", "ts", "ch", "sh", "sch", "y", "e", "yu", "ya"]))
+TRANSLIT.update({"ё": "yo", "ъ": "", "ь": "", "ў": "o", "қ": "q", "ғ": "g", "ҳ": "h"})
+SIGNUP_TYPES = [("🍽 Кафе, магазин, доставка", "shop"), ("💇 Салон, клиника, запись на время", "booking"),
+                ("📝 Приём заявок (недвижимость, услуги)", "leads"), ("👔 Подбор персонала", "recruiter")]
+
+
+def make_slug(name):
+    base = "".join(TRANSLIT.get(ch, ch) for ch in name.lower())
+    base = "".join(ch if ch.isascii() and ch.isalnum() else "-" for ch in base).strip("-")
+    base = "-".join(x for x in base.split("-") if x)[:20] or "biz"
+    if base.startswith("adm"):  # "adm_..." зарезервировано под ссылки администраторов
+        base = "b-" + base
+    slug, n = base, 1
+    while get_tenant(slug):
+        n += 1
+        slug = f"{base}-{n}"
+    return slug
+
+
+def qr_png(url):
+    if segno is None:
+        return None
+    buf = io.BytesIO()
+    segno.make(url, error="m").save(buf, kind="png", scale=10, border=3)
+    return buf.getvalue()
+
+
+async def share_pack(bot, uid, slug, caption_prefix=""):
+    """Отправляет ссылку, готовый текст для клиентов и QR-код."""
+    u = await bot_username(bot)
+    link = f"https://t.me/{u}?start={slug}"
+    name = (get_tenant(slug) or {}).get("name", "")
+    text = (f"{caption_prefix}🔗 Ссылка для ваших клиентов:\n{link}\n\n"
+            f"Готовый текст для Instagram, Telegram и визитки:\n«{name}: заказывайте и записывайтесь в нашем Telegram-боте 👉 {link}»")
+    png = qr_png(link)
+    if png:
+        await bot.send_photo(uid, BufferedInputFile(png, filename="qr.png"), caption=text[:1024] + "\n\n📌 QR-код можно распечатать и поставить на стол или кассу.")
+    else:
+        await bot.send_message(uid, text)
+
+
+def help_text(mods):
+    parts = []
+    for mod in mods:
+        if mod in HELP:
+            title, steps = HELP[mod]
+            parts.append(f"{title}\n" + "\n".join(f"{i}. {x}" for i, x in enumerate(steps, 1)))
+    parts.append("🔗 Ссылка и QR для клиентов: «⚙️ Ещё» → «🔗 Ссылка и QR».\n👥 Добавить сотрудника: «⚙️ Ещё» → «👥 Сотрудник».\n"
+                 "Если запутались, нажмите /start: бот покажет главное меню.")
+    return "\n\n".join(parts)
+
+
+async def signup_done(bot, uid, ans, ctx):
+    module = ans["module"]
+    name = ans["name"]
+    slug = make_slug(name)
+    db.execute("INSERT INTO tenants(slug, name, module, created_by) VALUES(?,?,?,?)", (slug, name, module, uid))
+    db.execute("INSERT OR IGNORE INTO tenant_admins(tenant, user_id) VALUES(?,?)", (slug, uid))
+    db.commit()
+    set_user_tenant(uid, slug)
+    db.execute("INSERT OR IGNORE INTO users(id, lang) VALUES(?, 'ru')", (uid,))
+    db.commit()
+    steps = []
+    for mod in module.split(","):
+        if mod in HELP:
+            steps += HELP[mod][1][:3]
+    await bot.send_message(uid, f"🎉 Готово! Бот для «{name}» создан.\n\nЧто сделать дальше:\n" + "\n".join(f"{i}. {x}" for i, x in enumerate(steps, 1))
+                           + "\n\nКнопка «⚙️ Ещё» → «❓ Помощь» всегда подскажет.", reply_markup=main_kb(uid))
+    await share_pack(bot, uid, slug)
+    if is_owner(uid):
+        u = await bot_username(bot)
+        await bot.send_message(uid, f"Ссылка для администратора заведения (одноразовая):\nhttps://t.me/{u}?start={new_invite(slug)}")
+    else:
+        await notify_owners(bot, f"🆕 Новый бизнес: «{name}» ({module}), создал tg://user?id={uid}")
+
+
+async def notify_owners(bot, text):
+    for a in OWNERS:
+        try:
+            await bot.send_message(a, text)
+        except Exception:
+            logging.warning("owner %s unreachable", a)
+
+
+def signup_allowed(uid):
+    if is_owner(uid):
+        return True
+    return SELF_SIGNUP and not db.execute("SELECT 1 FROM tenants WHERE created_by=?", (uid,)).fetchone()
+
+
+register_wizard("signup", [
+    {"key": "name", "prompt": "Как называется ваш бизнес? (так увидят клиенты)", "type": "text"},
+    {"key": "module", "prompt": "Чем вы занимаетесь?", "type": "choice",
+     "choices": lambda uid, a, c: [(label, mod) for label, mod in SIGNUP_TYPES if mod in MODULE_BUTTONS]},
+], signup_done)
+
+
+@router.callback_query(F.data == "signup")
+@router.message(Command("create"))
+@router.message(F.text == NEW_SPACE_BTN)
+async def signup_start(event, state: FSMContext):
+    uid = event.from_user.id
+    target = event.message if isinstance(event, CallbackQuery) else event
+    if not signup_allowed(uid):
+        text = "У вас уже есть бот. Откройте «⚙️ Ещё» → «❓ Помощь», чтобы управлять им." if (SELF_SIGNUP or is_owner(uid)) else "Создание ботов сейчас закрыто."
+        await target.answer(text)
+    else:
+        await start_wizard(target, state, "signup", uid)
+    if isinstance(event, CallbackQuery):
+        await event.answer()
+
+
+@router.message(F.text == MORE_BTN)
+async def more_page_open(m: Message):
+    if is_admin(m.from_user.id):
+        more_page.add(m.from_user.id)
+        await m.answer("Дополнительные кнопки 👇", reply_markup=main_kb(m.from_user.id))
+
+
+@router.message(F.text == BACK_BTN)
+async def more_page_close(m: Message):
+    if is_admin(m.from_user.id):
+        more_page.discard(m.from_user.id)
+        await m.answer("Главное меню 👇", reply_markup=main_kb(m.from_user.id))
+
+
+@router.message(F.text == HELP_BTN)
+async def help_cmd(m: Message):
+    uid = m.from_user.id
+    if is_admin(uid) and tenant_of(uid):
+        await m.answer(help_text(modules_of(uid)))
+
+
+@router.message(F.text == LINK_BTN)
+async def link_cmd(m: Message):
+    uid, tenant = m.from_user.id, tenant_of(m.from_user.id)
+    if is_admin(uid) and tenant:
+        await share_pack(m.bot, uid, tenant)
+
+
+@router.message(F.text == STAFF_BTN)
+async def staff_cmd(m: Message):
+    uid, tenant = m.from_user.id, tenant_of(m.from_user.id)
+    if is_admin(uid) and tenant:
+        u = await bot_username(m.bot)
+        await m.answer("👥 Отправьте эту ссылку сотруднику. Перейдя по ней, он сможет принимать заказы и заявки:\n"
+                       f"https://t.me/{u}?start={new_invite(tenant)}\n\nСсылка одноразовая. Для следующего сотрудника нажмите кнопку ещё раз.")
 
 
 # ====================== фоновые задачи и запуск ======================

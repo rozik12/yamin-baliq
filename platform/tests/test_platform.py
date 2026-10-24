@@ -72,6 +72,10 @@ def labels(uid):
     return [b.text for row in core.main_kb(uid).keyboard for b in row]
 
 
+def buttons(markup):
+    return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+
 def cmd(args=None):
     return MagicMock(args=args)
 
@@ -80,8 +84,8 @@ class PlatformTests(unittest.TestCase):
     def setUp(self):
         for t in ("applications", "vacancies", "users", "tenants", "tenant_admins", "user_tenant", "invites", "banned"):
             core.db.execute(f"DELETE FROM {t}")
-        core.db.execute("INSERT INTO tenants VALUES('vlad','Влад бизнес','recruiter',1)")
-        core.db.execute("INSERT INTO tenants VALUES('shop','Магазин','recruiter',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('vlad','Влад бизнес','recruiter',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('shop','Магазин','recruiter',1)")
         core.db.executemany("INSERT INTO tenant_admins VALUES(?,?)", [("vlad", ADM_A), ("shop", ADM_B)])
         core.db.executemany("INSERT INTO user_tenant VALUES(?,?)", [(ADM_A, "vlad"), (ADM_B, "shop"), (CLI_A, "vlad"), (CLI_B, "shop")])
         core.db.executemany("INSERT INTO users VALUES(?,?)", [(CLI_A, "ru"), (CLI_B, "ru")])
@@ -122,27 +126,17 @@ class PlatformTests(unittest.TestCase):
         self.assertIsNone(core.get_tenant("hack"))
 
     def test_owner_creates_space_with_buttons_wizard(self):
-        self.assertEqual(labels(OWNER)[:2], ["➕ Новое заведение", "🏢 Пространства"]) if not core.tenant_of(OWNER) else None
         st = St()
-        run(core.new_space_button(msg(uid=OWNER), st))
+        run(core.signup_start(msg(uid=OWNER), st))
         run(core.wizard_input(msg("Влад бизнес", OWNER), st))
-        m = msg("Влад!", OWNER)
-        run(core.wizard_input(m, st))  # недопустимое имя ссылки
-        self.assertIn("Не получилось", m.answer.call_args[0][0])
-        run(core.wizard_input(msg("vlad", OWNER), st))  # уже существует
-        self.assertEqual(st.d["i"], 1)
-        run(core.wizard_input(msg("Studio-1", OWNER), st))
-        c = cb("wzc:5", OWNER)
+        c = cb("wzc:3", OWNER)
         run(core.wizard_choice(c, st))
-        tenant = core.get_tenant("studio-1")
-        self.assertEqual((tenant["name"], tenant["module"]), ("Влад бизнес", "shop,support"))
-        self.assertEqual(core.tenant_of(OWNER), "studio-1")
-        sent = c.message.bot.send_message.call_args[0][1]
-        self.assertIn("start=studio-1", sent)
-        self.assertIn("start=adm_", sent)
-        m = msg(uid=ADM_A)
-        run(core.new_space_button(m, St()))
-        m.answer.assert_not_awaited()
+        tenant = core.get_tenant("vlad-biznes")
+        self.assertEqual((tenant["name"], tenant["module"]), ("Влад бизнес", "recruiter"))
+        self.assertEqual(core.tenant_of(OWNER), "vlad-biznes")
+        texts = " ".join(str(x) for x in c.message.bot.send_message.call_args_list) + str(c.message.bot.send_photo.call_args_list)
+        self.assertIn("start=vlad-biznes", texts)
+        self.assertIn("start=adm_", texts)
 
     def test_spaces_enter_button(self):
         c = cb("enter:shop", OWNER)
@@ -162,7 +156,8 @@ class PlatformTests(unittest.TestCase):
         self.assertIn("Новое заведение", m.answer.call_args[0][0])
         m = msg("привет", 999)
         run(core.unknown_message(m, St()))
-        self.assertIn("havolasi", m.answer.call_args[0][0])
+        self.assertIn("Здравствуйте", m.answer.call_args[0][0])
+        self.assertIn("signup", buttons(m.answer.call_args[1]["reply_markup"]))
         c = cb("old:button", CLI_A)
         run(core.stale_button(c))
         self.assertTrue(c.answer.call_args[1].get("show_alert"))
@@ -205,7 +200,10 @@ class PlatformTests(unittest.TestCase):
 
     def test_keyboards_by_role_and_module(self):
         self.assertEqual(labels(CLI_A), ["💼 Вакансии", "📄 Мои отклики", "🌐 Язык"])
-        self.assertEqual(labels(ADM_A), [rec.ADM_CAND, rec.ADM_JOBS, rec.ADM_ADD, rec.ADM_REPORT, core.STATS_BTN, core.EXPORT_BTN])
+        self.assertEqual(labels(ADM_A), [rec.ADM_CAND, rec.ADM_ADD, rec.ADM_JOBS, core.MORE_BTN])
+        core.more_page.add(ADM_A)
+        self.assertEqual(labels(ADM_A), [rec.ADM_REPORT, core.STATS_BTN, core.EXPORT_BTN, core.LINK_BTN, core.STAFF_BTN, core.HELP_BTN, core.BACK_BTN])
+        core.more_page.discard(ADM_A)
         self.assertIn(core.SPACES_BTN, labels(OWNER))
         self.assertNotIn(core.SPACES_BTN, labels(ADM_A))
 

@@ -53,7 +53,12 @@ def cleanup(slug):
     db.commit()
 
 
-core.register_module("recruiter", ["b_jobs", "b_apps"], [ADM_CAND, ADM_JOBS, ADM_ADD, ADM_REPORT], cleanup=cleanup)
+core.register_module("recruiter", ["b_jobs", "b_apps"], [ADM_CAND, ADM_ADD, ADM_JOBS], cleanup=cleanup, more_labels=[ADM_REPORT])
+core.register_help("recruiter", "👔 Подбор персонала", [
+    "Нажмите «➕ Вакансия»: название, город, зарплата, описание.",
+    "Нажмите «⚙️ Ещё» → «🔗 Ссылка и QR» и отправьте кандидатам.",
+    "Отклики приходят сюда с резюме. Нажмите «Пригласить», «Принять» или «Отказ»: кандидат получит уведомление.",
+])
 
 db.execute("CREATE TABLE IF NOT EXISTS vacancies(id INTEGER PRIMARY KEY, tenant TEXT, title TEXT, city TEXT, salary TEXT, description TEXT, active INTEGER DEFAULT 1)")
 db.execute("CREATE TABLE IF NOT EXISTS applications(id INTEGER PRIMARY KEY, tenant TEXT, vacancy_id INT, user_id INT, name TEXT, phone TEXT, about TEXT, cv TEXT, status TEXT DEFAULT 'new', created TEXT DEFAULT CURRENT_TIMESTAMP)")

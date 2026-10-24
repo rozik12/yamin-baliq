@@ -1,6 +1,6 @@
 import unittest
 
-from helpers import St, buttons, cb, cmd, labels, msg, mkbot, run
+from helpers import St, admin_pages, buttons, cb, cmd, labels, msg, mkbot, run
 
 import core  # noqa: E402
 from modules import leads, support  # noqa: E402
@@ -12,8 +12,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         for t in ("leads", "faq", "tickets", "users", "tenants", "tenant_admins", "user_tenant", "settings"):
             core.db.execute(f"DELETE FROM {t}")
-        core.db.execute("INSERT INTO tenants VALUES('a','Агентство А','leads,support',1)")
-        core.db.execute("INSERT INTO tenants VALUES('b','Агентство Б','leads,support',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('a','Агентство А','leads,support',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('b','Агентство Б','leads,support',1)")
         core.db.executemany("INSERT INTO tenant_admins VALUES(?,?)", [("a", ADM_A), ("b", ADM_B)])
         core.db.executemany("INSERT INTO user_tenant VALUES(?,?)", [(ADM_A, "a"), (ADM_B, "b"), (CLI_A, "a"), (CLI_B, "b")])
         core.db.executemany("INSERT INTO users VALUES(?,?)", [(u, "ru") for u in (ADM_A, ADM_B, CLI_A, CLI_B)])
@@ -38,9 +38,11 @@ class LeadsTests(Base):
 
     def test_two_modules_keyboard(self):
         self.assertEqual(labels(core.main_kb, CLI_A), ["📝 Оставить заявку", "📄 Мои заявки", "❓ Вопросы", "🆘 Оператор", "🌐 Язык"])
-        admin = labels(core.main_kb, ADM_A)
-        for b in (leads.ADM_LEADS, leads.ADM_REPORT, support.ADM_ADDFAQ, support.ADM_TICKETS):
-            self.assertIn(b, admin)
+        first, second = admin_pages(ADM_A)
+        self.assertEqual(first, [leads.ADM_LEADS, support.ADM_TICKETS, core.MORE_BTN])
+        for b in (leads.ADM_REPORT, support.ADM_ADDFAQ, support.ADM_FAQ, core.SETTINGS_BTN, core.STATS_BTN, core.EXPORT_BTN,
+                  core.LINK_BTN, core.STAFF_BTN, core.HELP_BTN, core.BACK_BTN):
+            self.assertIn(b, second)
 
     def test_lead_with_topics_notifies_only_own_admin(self):
         core.set_setting("a", "lead_topics", "Квартира, Дом, Офис")

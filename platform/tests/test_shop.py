@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
-from helpers import St, buttons, cb, cmd, labels, msg, run
+from helpers import St, admin_pages, buttons, cb, cmd, labels, msg, run
 
 import core  # noqa: E402
 from modules import shop  # noqa: E402
@@ -13,8 +13,8 @@ class ShopTests(unittest.TestCase):
     def setUp(self):
         for t in ("products", "shop_orders", "users", "tenants", "tenant_admins", "user_tenant", "settings", "invites", "banned"):
             core.db.execute(f"DELETE FROM {t}")
-        core.db.execute("INSERT INTO tenants VALUES('a','Магазин А','shop',1)")
-        core.db.execute("INSERT INTO tenants VALUES('b','Магазин Б','shop,support',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('a','Магазин А','shop',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('b','Магазин Б','shop,support',1)")
         core.db.executemany("INSERT INTO tenant_admins VALUES(?,?)", [("a", ADM_A), ("b", ADM_B)])
         core.db.executemany("INSERT INTO user_tenant VALUES(?,?)", [(ADM_A, "a"), (ADM_B, "b"), (CLI_A, "a"), (CLI_B, "b")])
         core.db.executemany("INSERT INTO users VALUES(?,?)", [(CLI_A, "ru"), (CLI_B, "ru"), (ADM_A, "ru"), (ADM_B, "ru")])
@@ -48,8 +48,10 @@ class ShopTests(unittest.TestCase):
 
     def test_keyboards_merge_modules(self):
         self.assertEqual(labels(core.main_kb, CLI_A), ["🛍 Каталог", "🛒 Корзина", "📜 Мои заказы", "🌐 Язык"])
-        self.assertIn(shop.ADM_ORDERS, labels(core.main_kb, ADM_A))
-        self.assertIn(core.SETTINGS_BTN, labels(core.main_kb, ADM_A))
+        first, second = admin_pages(ADM_A)
+        self.assertEqual(first, [shop.ADM_ORDERS, shop.ADM_ADDP, shop.ADM_CATALOG, core.MORE_BTN])
+        self.assertIn(core.SETTINGS_BTN, second)
+        self.assertIn(shop.ADM_PROMO, second)
 
     def test_catalog_shows_only_own_active_products(self):
         self.product("a", "Одежда", "Скрытый", 1, active=0)

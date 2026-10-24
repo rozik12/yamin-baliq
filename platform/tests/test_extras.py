@@ -16,8 +16,8 @@ class Base(unittest.TestCase):
         for t in ("products", "shop_orders", "shop_promos", "shop_bonuses", "leads", "services", "bookings", "ratings", "scheduled", "users",
                   "tenants", "tenant_admins", "user_tenant", "settings", "faq", "tickets"):
             core.db.execute(f"DELETE FROM {t}")
-        core.db.execute("INSERT INTO tenants VALUES('a','А','shop,booking,leads,support',1)")
-        core.db.execute("INSERT INTO tenants VALUES('b','Б','shop',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('a','А','shop,booking,leads,support',1)")
+        core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('b','Б','shop',1)")
         core.db.executemany("INSERT INTO tenant_admins VALUES(?,?)", [("a", ADM_A), ("b", ADM_B)])
         core.db.executemany("INSERT INTO user_tenant VALUES(?,?)", [(ADM_A, "a"), (ADM_B, "b"), (CLI_A, "a"), (CLI_B, "b")])
         core.db.executemany("INSERT INTO users VALUES(?,?)", [(u, "ru") for u in (ADM_A, ADM_B, CLI_A, CLI_B)])
