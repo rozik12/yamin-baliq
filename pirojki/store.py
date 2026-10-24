@@ -24,24 +24,85 @@ class Store:
         CREATE TABLE IF NOT EXISTS invites(code TEXT PRIMARY KEY, used_by INTEGER);
         CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, price INTEGER, active INTEGER DEFAULT 1);
         CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS langs(id INTEGER PRIMARY KEY, lang TEXT);
         CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, user_id INTEGER, user_name TEXT,
             kind TEXT, product_id INTEGER, product TEXT, qty INTEGER, amount INTEGER);
         """)
 
-    DEFAULTS = ["Пирожки с мясом", "Пирожки с картошкой", "Пирожки с сосиской", "Гумма",
-                "Чебурек с мясом", "Чебурек с картошкой", "Чебурек со шпинатом",
-                "Кола 0,5", "Фанта 0,5", "Ice Tea 0,5", "Fuse Tea 0,5", "Мохито 0,5", "Royal 0,5",
-                "Вода без газа 0,5", "Вода без газа Sweet 0,5"]
+    # (ru, uz, en)
+    DEFAULTS = [
+        ("Пирожки с мясом", "Go'shtli pirojki", "Meat pies"),
+        ("Пирожки с картошкой", "Kartoshkali pirojki", "Potato pies"),
+        ("Пирожки с сосиской", "Kolbasali pirojki", "Sausage pies"),
+        ("Гумма", "Gumma", "Gumma"),
+        ("Чебурек с мясом", "Go'shtli cheburek", "Meat chebureki"),
+        ("Чебурек с картошкой", "Kartoshkali chebureki", "Potato chebureki"),
+        ("Чебурек со шпинатом", "Ismaloqli chebureki", "Spinach chebureki"),
+        ("Кола 0,5", "Kola 0,5", "Cola 0.5"),
+        ("Фанта 0,5", "Fanta 0,5", "Fanta 0.5"),
+        ("Ice Tea 0,5", "Ice Tea 0,5", "Ice Tea 0.5"),
+        ("Fuse Tea 0,5", "Fuse Tea 0,5", "Fuse Tea 0.5"),
+        ("Мохито 0,5", "Mojito 0,5", "Mojito 0.5"),
+        ("Royal 0,5", "Royal 0,5", "Royal 0.5"),
+        ("Вода без газа 0,5", "Gazsiz suv 0,5", "Still water 0.5"),
+        ("Вода без газа Sweet 0,5", "Gazsiz suv Sweet 0,5", "Still water Sweet 0.5"),
+    ]
+
+    def _migrate_names(self):
+        for col in ("name_uz", "name_en"):
+            try:
+                self.db.execute(f"ALTER TABLE products ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
+        for ru, uz, en in self.DEFAULTS:
+            self.db.execute("UPDATE products SET name_uz=?, name_en=? WHERE name=? AND name_uz IS NULL", (uz, en, ru))
+        self.db.commit()
 
     def seed_defaults(self):
         """Один раз при первом запуске: стартовый список товаров с ценой 0 (админ ставит цены сам)."""
+        self._migrate_names()
         if self.db.execute("SELECT 1 FROM meta WHERE k='seeded'").fetchone():
             return False
-        for n in self.DEFAULTS:
-            self.db.execute("INSERT OR IGNORE INTO products(name,price,active) VALUES(?,0,1)", (n,))
+        for ru, uz, en in self.DEFAULTS:
+            self.db.execute("INSERT OR IGNORE INTO products(name,price,active,name_uz,name_en) VALUES(?,0,1,?,?)", (ru, uz, en))
         self.db.execute("INSERT INTO meta(k,v) VALUES('seeded','1')")
         self.db.commit()
         return True
+
+    # --- язык
+    def get_lang(self, uid):
+        r = self.db.execute("SELECT lang FROM langs WHERE id=?", (uid,)).fetchone()
+        return r["lang"] if r else None
+
+    def set_lang(self, uid, lang):
+        self.db.execute("INSERT INTO langs(id,lang) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET lang=excluded.lang", (uid, lang))
+        self.db.commit()
+
+    @staticmethod
+    def pname(p, lang):
+        """Название товара на языке пользователя (запасной вариант — основное)."""
+        if p is None:
+            return ""
+        col = {"uz": "name_uz", "en": "name_en"}.get(lang)
+        return (p[col] if col and col in p.keys() and p[col] else p["name"])
+
+    def stats_extra(self, start, end):
+        """Подробная статистика продаж: топ товаров, лучший день, пиковый час, среднее в день."""
+        rows = [r for r in self.between(start, end) if r["kind"] == "sale"]
+        top, days, hours = {}, {}, {}
+        for r in rows:
+            top[r["product_id"]] = top.get(r["product_id"], 0) + r["qty"]
+            d = days.setdefault(r["ts"][:10], {"qty": 0, "amount": 0})
+            d["qty"] += r["qty"]
+            d["amount"] += r["amount"]
+            h = r["ts"][11:13]
+            hours[h] = hours.get(h, 0) + r["qty"]
+        best = max(days.items(), key=lambda kv: (kv[1]["qty"], kv[1]["amount"])) if days else None
+        peak = max(hours.items(), key=lambda kv: kv[1]) if hours else None
+        span = max((end - start).days, 1)
+        total = sum(top.values())
+        return {"top": sorted(top.items(), key=lambda kv: -kv[1])[:5], "best_day": best, "peak_hour": peak,
+                "avg_qty": round(total / span, 1), "days": days}
 
     # --- работники
     def new_invite(self):
@@ -143,5 +204,8 @@ class Store:
         return {n: s["made"].get(n, 0) - s["sold"].get(n, 0) for n in names}
 
 
-def money(n):
-    return f"{n:,}".replace(",", " ") + " сум"
+CUR = {"ru": "сум", "uz": "so'm", "en": "UZS"}
+
+
+def money(n, lang="ru"):
+    return f"{n:,}".replace(",", " ") + " " + CUR.get(lang, "сум")

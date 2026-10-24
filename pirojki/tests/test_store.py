@@ -74,5 +74,66 @@ class Seed(unittest.TestCase):
         self.assertEqual([p["price"] for p in s.products() if p["name"] == "Гумма"], [7000])
 
 
+
+
+class Lang(unittest.TestCase):
+    def test_all_texts_in_three_langs(self):
+        from i18n import T, LANGS
+        for k, v in T.items():
+            self.assertEqual(set(v), set(LANGS), k)
+            for l, s in v.items():
+                self.assertTrue(s, (k, l))
+
+    def test_format_placeholders_match(self):
+        import re
+        from i18n import T
+        for k, v in T.items():
+            if isinstance(v["ru"], str):
+                ph = {l: set(re.findall(r"{(\w+)}", s)) for l, s in v.items()}
+                self.assertEqual(ph["ru"], ph["uz"], k)
+                self.assertEqual(ph["ru"], ph["en"], k)
+
+    def test_lang_and_names(self):
+        s = Store()
+        s.seed_defaults()
+        s.set_lang(7, "uz")
+        self.assertEqual(s.get_lang(7), "uz")
+        self.assertIsNone(s.get_lang(8))
+        p = [p for p in s.products() if p["name"] == "Гумма"][0]
+        self.assertEqual(s.pname(p, "en"), "Gumma")
+        c = [p for p in s.products() if p["name"] == "Чебурек с мясом"][0]
+        self.assertEqual(s.pname(c, "uz"), "Go'shtli cheburek")
+        s.add_product("Новый", 100)
+        n = [p for p in s.products() if p["name"] == "Новый"][0]
+        self.assertEqual(s.pname(n, "en"), "Новый")
+
+    def test_stats_extra(self):
+        s = Store()
+        s.add_product("A", 100)
+        s.add_product("B", 50)
+        a, b = [p["id"] for p in s.products()]
+        s.record(1, "W", "sale", a, 5)
+        s.record(1, "W", "sale", b, 2)
+        ex = s.stats_extra(day_start(), day_start() + timedelta(days=1))
+        self.assertEqual(ex["top"][0], (a, 5))
+        self.assertEqual(ex["best_day"][1]["qty"], 7)
+        self.assertEqual(ex["avg_qty"], 7.0)
+
+    def test_admin_cannot_work(self):
+        os.environ["ADMIN_IDS"] = "1755207256,8219891075"
+        import importlib, bot
+        importlib.reload(bot)
+        bot.store.add_worker(1755207256, "adm")
+        self.assertFalse(bot.is_worker(1755207256))
+        bot.store.add_worker(55, "w")
+        self.assertTrue(bot.is_worker(55))
+        kb = [b.text for r in bot.menu(1755207256).keyboard for b in r]
+        self.assertNotIn(bot.T["b_sale"]["ru"], kb)
+        self.assertIn(bot.T["b_month"]["ru"], kb)
+        wk = [b.text for r in bot.menu(55).keyboard for b in r]
+        self.assertIn(bot.T["b_sale"]["ru"], wk)
+        self.assertNotIn(bot.T["b_today"]["ru"], wk)
+
+
 if __name__ == "__main__":
     unittest.main()
