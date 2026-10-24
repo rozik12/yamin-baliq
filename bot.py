@@ -212,6 +212,12 @@ router = Router()
 SETUP_CODE = os.environ.get("ADMIN_SETUP_CODE", "")
 ADMIN_BTN = "📋 Заказы (админ)"
 SETTINGS_BTN = "⚙️ Настройки (админ)"
+STATS_BTN = "📊 Статистика"
+STOP_BTN = "🚫 Стоп-лист"
+EXPORT_BTN = "📥 Экспорт заказов"
+CLIENT_MODE_BTN = "👤 Режим клиента"
+ADMIN_MODE_BTN = "🛠 Режим админа"
+client_mode: set[int] = set()  # админы, временно смотрящие бота глазами клиента
 
 
 def all_admins():
@@ -273,11 +279,14 @@ class Booking(StatesGroup):
 
 def main_kb(uid):
     b = ReplyKeyboardBuilder()
+    if is_admin(uid) and uid not in client_mode:
+        for text in (ADMIN_BTN, SETTINGS_BTN, STATS_BTN, STOP_BTN, EXPORT_BTN, CLIENT_MODE_BTN):
+            b.button(text=text)
+        return b.adjust(2).as_markup(resize_keyboard=True)
     for k in ("b_menu", "b_cart", "b_hist", "b_book", "b_info", "b_lang"):
         b.button(text=t(uid, k))
     if is_admin(uid):
-        b.button(text=ADMIN_BTN)
-        b.button(text=SETTINGS_BTN)
+        b.button(text=ADMIN_MODE_BTN)
     return b.adjust(2).as_markup(resize_keyboard=True)
 
 
@@ -318,6 +327,10 @@ def menu_kb(uid):
 
 
 async def send_welcome(m: Message, uid):
+    if is_admin(uid) and uid not in client_mode:
+        return await m.answer("🛠 Панель администратора. Новые заказы и чеки приходят сюда сообщениями с кнопками.\n"
+                              "Команды: /orders /stats /stop /export /settings /broadcast /promo /admins",
+                              reply_markup=main_kb(uid))
     caption = t(uid, "welcome", name=INFO["name"])
     logo = CDIR / "logo.jpg"
     if logo.exists():
@@ -1002,6 +1015,7 @@ async def rate(c: CallbackQuery):
 
 
 @router.message(Command("stats"))
+@router.message(F.text == STATS_BTN)
 async def stats(m: Message):
     if not is_admin(m.from_user.id):
         return
@@ -1206,7 +1220,23 @@ async def admin_save(m: Message, state: FSMContext):
     await m.answer("⚙️ Что ещё изменить?", reply_markup=adm_home_kb())
 
 
+@router.message(F.text == CLIENT_MODE_BTN)
+async def to_client_mode(m: Message):
+    if is_admin(m.from_user.id):
+        client_mode.add(m.from_user.id)
+        await m.answer("👤 Режим клиента: так бот выглядит для гостей. Вернуться: «🛠 Режим админа».",
+                       reply_markup=main_kb(m.from_user.id))
+
+
+@router.message(F.text == ADMIN_MODE_BTN)
+async def to_admin_mode(m: Message):
+    if is_admin(m.from_user.id):
+        client_mode.discard(m.from_user.id)
+        await m.answer("🛠 Режим админа", reply_markup=main_kb(m.from_user.id))
+
+
 @router.message(Command("export"))
+@router.message(F.text == EXPORT_BTN)
 async def export_orders(m: Message):
     if not is_admin(m.from_user.id):
         return
@@ -1260,6 +1290,7 @@ def stop_kb():
 
 
 @router.message(Command("stop"))
+@router.message(F.text == STOP_BTN)
 async def stoplist(m: Message):
     if is_admin(m.from_user.id):
         await m.answer("Стоп-лист: нажмите на блюдо, чтобы убрать из меню (🚫) или вернуть (✅)", reply_markup=stop_kb())

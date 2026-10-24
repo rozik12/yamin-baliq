@@ -408,6 +408,28 @@ class BotTests(unittest.TestCase):
         run(bot.admin_settings(m, St()))
         m.answer.assert_not_awaited()
 
+    def test_admin_keyboard_has_no_client_buttons_and_mode_toggle(self):
+        def labels(uid):
+            return [b.text for row in bot.main_kb(uid).keyboard for b in row]
+        bot.db.execute("INSERT OR REPLACE INTO users(id,lang) VALUES(111,'ru')")
+        admin = labels(111)
+        self.assertIn(bot.ADMIN_BTN, admin)
+        self.assertIn(bot.CLIENT_MODE_BTN, admin)
+        for client_btn in ("🍽 Меню", "🛒 Корзина", "📅 Забронировать стол", "📜 Мои заказы"):
+            self.assertNotIn(client_btn, admin)
+        self.assertIn("🍽 Меню", labels(5))
+        self.assertNotIn(bot.ADMIN_BTN, labels(5))
+        run(bot.to_client_mode(msg(uid=111)))
+        self.assertIn("🍽 Меню", labels(111))
+        self.assertIn(bot.ADMIN_MODE_BTN, labels(111))
+        run(bot.to_admin_mode(msg(uid=111)))
+        self.assertNotIn("🍽 Меню", labels(111))
+        run(bot.to_client_mode(msg(uid=999)))
+        self.assertNotIn(999, bot.client_mode)
+        m = msg("/start", uid=111)
+        run(bot.send_welcome(m, 111))
+        self.assertIn("Панель администратора", m.answer.call_args[0][0])
+
     def test_admin_management(self):
         run(bot.claim_admin(msg(uid=222), MagicMock(args="WRONG")))
         self.assertFalse(bot.is_admin(222))
