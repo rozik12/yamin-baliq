@@ -144,6 +144,29 @@ def admins_of(slug):
     return tenant_admins(slug) or set(OWNERS)
 
 
+PERMS = {"admin": None, "manager": {"stats", "export", "broadcast", "more"}, "operator": set()}
+
+
+def role_of(uid, tenant=None):
+    """'admin' для владельца платформы и администраторов, 'manager', 'operator' или None."""
+    if is_owner(uid):
+        return "admin"
+    tenant = tenant or tenant_of(uid)
+    if not tenant:
+        return None
+    row = db.execute("SELECT role FROM tenant_admins WHERE tenant=? AND user_id=?", (tenant, uid)).fetchone()
+    return (row[0] or "admin") if row else None
+
+
+def can(uid, perm):
+    """Права: администратор может всё, менеджер смотрит отчёты и рассылает, оператор только принимает заказы и заявки."""
+    role = role_of(uid)
+    if role is None:
+        return False
+    allowed = PERMS.get(role, set())
+    return allowed is None or perm in allowed
+
+
 def is_admin(uid, tenant=None):
     if is_owner(uid):
         return True
@@ -191,12 +214,26 @@ def brand_of(uid):
     return tenant["name"] if tenant else "Bot"
 
 
+def in_quiet_hours(tenant, now_utc=None):
+    """Тихие часы админов: уведомления приходят без звука (настройки «quiet_from» и «quiet_to»)."""
+    qf, qt = get_setting(tenant, "quiet_from"), get_setting(tenant, "quiet_to")
+    if not (qf and qt):
+        return False
+    local = local_today(tenant, now_utc)
+    now_min, a, b = local.hour * 60 + local.minute, int(qf[:2]) * 60 + int(qf[3:5]), int(qt[:2]) * 60 + int(qt[3:5])
+    return a <= now_min < b if a < b else (now_min >= a or now_min < b)
+
+
 async def notify_admins(bot, tenant, text, reply_markup=None):
+    silent = in_quiet_hours(tenant)
     for a in admins_of(tenant):
         try:
-            await bot.send_message(a, text, reply_markup=reply_markup)
+            await bot.send_message(a, text, reply_markup=reply_markup, disable_notification=silent)
         except Exception:
             logging.warning("admin %s unreachable", a)
+
+
+AUTOMATION_BTN, AUDIT_BTN = "🤖 Автоматизация", "🧾 Журнал"
 
 
 def main_kb(uid):
@@ -204,14 +241,18 @@ def main_kb(uid):
     mods = modules_of(uid)
     if is_admin(uid):
         labels = []
-        if mods and uid in more_page:
+        role = role_of(uid)
+        if mods and uid in more_page and can(uid, "more"):
             for mod in mods:
                 labels += [x for x in MODULE_BUTTONS[mod]["more"] if x not in labels]
-            labels += [SETTINGS_BTN, BROADCAST_BTN, STATS_BTN, EXPORT_BTN, LINK_BTN, STAFF_BTN, HELP_BTN, BACK_BTN]
+            for label, perm in ((SETTINGS_BTN, "settings"), (AUTOMATION_BTN, "automation"), (BROADCAST_BTN, "broadcast"), (STATS_BTN, "stats"),
+                                (EXPORT_BTN, "export"), (LINK_BTN, "more"), (STAFF_BTN, "staff"), (AUDIT_BTN, "audit"), (HELP_BTN, "more"), (BACK_BTN, "more")):
+                if can(uid, perm):
+                    labels.append(label)
         else:
             for mod in mods:
                 labels += [x for x in MODULE_BUTTONS[mod]["admin"] if x not in labels]
-            if mods:
+            if mods and can(uid, "more"):
                 labels.append(MORE_BTN)
             if is_owner(uid):
                 labels += [NEW_SPACE_BTN, SPACES_BTN]
@@ -292,10 +333,10 @@ async def start(m: Message, state: FSMContext, command: CommandObject):
     uid = m.from_user.id
     arg = (command.args or "").strip()
     if arg.startswith("adm_"):
-        row = db.execute("SELECT tenant FROM invites WHERE code=? AND used=0", (arg,)).fetchone()
+        row = db.execute("SELECT tenant, role FROM invites WHERE code=? AND used=0", (arg,)).fetchone()
         if not row:
             return await m.answer("Ссылка-приглашение недействительна или уже использована.")
-        db.execute("INSERT OR IGNORE INTO tenant_admins(tenant, user_id) VALUES(?,?)", (row[0], uid))
+        db.execute("INSERT OR REPLACE INTO tenant_admins(tenant, user_id, role) VALUES(?,?,?)", (row[0], uid, row[1] or "admin"))
         db.execute("UPDATE invites SET used=1 WHERE code=?", (arg,))
         db.commit()
         set_user_tenant(uid, row[0])
@@ -360,9 +401,9 @@ async def space_links(bot, slug, code):
     return f"Ссылка для клиентов:\nhttps://t.me/{u}?start={slug}\n\nСсылка для администратора заведения (одноразовая):\nhttps://t.me/{u}?start={code}"
 
 
-def new_invite(slug):
+def new_invite(slug, role="admin"):
     code = "adm_" + secrets.token_urlsafe(8).replace("-", "x").replace("_", "y")
-    db.execute("INSERT INTO invites(code, tenant) VALUES(?,?)", (code, slug))
+    db.execute("INSERT INTO invites(code, tenant, role) VALUES(?,?,?)", (code, slug, role))
     db.commit()
     return code
 
@@ -584,7 +625,7 @@ register_background(schedule_loop)
 @router.message(F.text == EXPORT_BTN)
 async def export_cmd(m: Message):
     tenant = tenant_of(m.from_user.id)
-    if not (tenant and is_admin(m.from_user.id)):
+    if not (tenant and can(m.from_user.id, "export")):
         return
     mods = modules_of(m.from_user.id)
     sent = 0
@@ -617,7 +658,7 @@ def tenant_stats(tenant):
 @router.message(F.text == STATS_BTN)
 async def stats_cmd(m: Message):
     uid = m.from_user.id
-    if not is_admin(uid):
+    if not (is_admin(uid) and (can(uid, "stats") or not tenant_of(uid))):
         return
     tenant = tenant_of(uid)
     if tenant:
@@ -916,6 +957,7 @@ async def wizard_choice(c: CallbackQuery, state: FSMContext):
 # ====================== настройки заведения ======================
 async def _save_setting(bot, uid, ans, ctx):
     set_setting(ctx["tenant"], ctx["key"], ans["value"])
+    audit(ctx["tenant"], uid, f"настройка «{ctx['label']}» = {str(ans['value'])[:40]}")
     await bot.send_message(uid, "✅ Сохранено", reply_markup=main_kb(uid))
 
 
@@ -929,7 +971,7 @@ for _typ in ("text", "int", "time", "geo"):
 async def settings_menu(m: Message):
     uid = m.from_user.id
     tenant = tenant_of(uid)
-    if not (tenant and is_admin(uid)):
+    if not (tenant and can(uid, "settings")):
         return
     mods = modules_of(uid)
     b = InlineKeyboardBuilder()
@@ -945,7 +987,7 @@ async def settings_pick(c: CallbackQuery, state: FSMContext):
     uid = c.from_user.id
     tenant = tenant_of(uid)
     key = c.data.split(":", 1)[1]
-    if not (tenant and is_admin(uid)) or key not in SETTING_DEFS:
+    if not (tenant and can(uid, "settings")) or key not in SETTING_DEFS:
         return await c.answer("Нет доступа", show_alert=True)
     label, typ, _ = SETTING_DEFS[key]
     await start_wizard(c.message, state, f"setting_{typ}", uid, {"tenant": tenant, "key": key, "label": label})
@@ -958,6 +1000,42 @@ for _ddl in ("ALTER TABLE tenants ADD COLUMN paid_until TEXT", "ALTER TABLE prof
         db.commit()
     except sqlite3.OperationalError:
         pass
+for _ddl in ("ALTER TABLE tenant_admins ADD COLUMN role TEXT DEFAULT 'admin'", "ALTER TABLE invites ADD COLUMN role TEXT DEFAULT 'admin'",
+             "ALTER TABLE tenants ADD COLUMN partner TEXT"):
+    try:
+        db.execute(_ddl)
+        db.commit()
+    except sqlite3.OperationalError:
+        pass
+db.execute("CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, tenant TEXT, user_id INTEGER, action TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP)")
+db.execute("CREATE TABLE IF NOT EXISTS unmatched(tenant TEXT, text TEXT, n INTEGER DEFAULT 1, PRIMARY KEY(tenant, text))")
+db.commit()
+
+AUTOMATIONS: dict[str, dict] = {}  # key -> {title, default, module}
+ERASERS = []  # fn(tenant, uid) — стирают персональные данные клиента
+
+
+def register_automation(key, title, default=False, module="*"):
+    """Автоматизация с переключателем «Вкл/Выкл» в панели владельца бизнеса («🤖 Автоматизация»)."""
+    AUTOMATIONS[key] = {"title": title, "default": default, "module": module}
+
+
+def automation_on(tenant, key):
+    value = get_setting(tenant, "auto_" + key)
+    return AUTOMATIONS[key]["default"] if value is None else value == "1"
+
+
+def register_eraser(fn):
+    ERASERS.append(fn)
+
+
+def audit(tenant, uid, action):
+    """Журнал действий: кто и что сделал."""
+    if tenant:
+        db.execute("INSERT INTO audit(tenant,user_id,action) VALUES(?,?,?)", (tenant, uid, action[:200]))
+        db.commit()
+
+
 PERIODIC = []  # async fn(bot) — вызываются раз в пару минут вместе со сводкой
 WEEKLY = []
 
@@ -1121,13 +1199,35 @@ async def link_cmd(m: Message):
         await share_pack(m.bot, uid, tenant)
 
 
+ROLE_TITLES = {"admin": "👑 Администратор (всё)", "manager": "🧑‍💼 Менеджер (отчёты, рассылки)", "operator": "🧑‍🔧 Оператор (только заказы и заявки)"}
+
+
 @router.message(F.text == STAFF_BTN)
 async def staff_cmd(m: Message):
     uid, tenant = m.from_user.id, tenant_of(m.from_user.id)
-    if is_admin(uid) and tenant:
-        u = await bot_username(m.bot)
-        await m.answer("👥 Отправьте эту ссылку сотруднику. Перейдя по ней, он сможет принимать заказы и заявки:\n"
-                       f"https://t.me/{u}?start={new_invite(tenant)}\n\nСсылка одноразовая. Для следующего сотрудника нажмите кнопку ещё раз.")
+    if tenant and can(uid, "staff"):
+        b = InlineKeyboardBuilder()
+        for role, title in ROLE_TITLES.items():
+            b.button(text=title, callback_data=f"staff:{role}")
+        await m.answer("👥 Кого добавляем? Роль определяет, что человек сможет делать:", reply_markup=b.adjust(1).as_markup())
+
+
+@router.callback_query(F.data.regexp(r"^staff:(admin|manager|operator)$"))
+async def staff_role(c: CallbackQuery):
+    uid, tenant = c.from_user.id, tenant_of(c.from_user.id)
+    role = c.data.split(":")[1]
+    if not (tenant and can(uid, "staff")):
+        return await c.answer("Нет доступа", show_alert=True)
+    u = await bot_username(c.bot)
+    link = f"https://t.me/{u}?start={new_invite(tenant, role)}"
+    audit(tenant, uid, f"создал приглашение: {role}")
+    text = (f"👥 Отправьте эту ссылку сотруднику ({ROLE_TITLES[role]}):\n{link}\n\nСсылка одноразовая. Для следующего нажмите «👥 Сотрудник» ещё раз.")
+    png = qr_png(link)
+    if png:
+        await c.message.answer_photo(BufferedInputFile(png, filename="staff.png"), caption=text[:1024])
+    else:
+        await c.message.answer(text)
+    await c.answer()
 
 
 # ====================== «О нас», приглашение друга, клиенты ======================
@@ -1241,7 +1341,7 @@ register_wizard("broadcast", [
 @router.message(F.text == BROADCAST_BTN)
 async def broadcast_button(m: Message, state: FSMContext):
     tenant = tenant_of(m.from_user.id)
-    if tenant and is_admin(m.from_user.id):
+    if tenant and can(m.from_user.id, "broadcast"):
         await start_wizard(m, state, "broadcast", m.from_user.id, {"tenant": tenant})
 
 
@@ -1255,6 +1355,7 @@ async def broadcast_confirm(c: CallbackQuery):
         await c.message.answer("Отменено")
         return await c.answer()
     tenant, text, photo = pending
+    audit(tenant, uid, f"рассылка: {text[:50]}")
     sent = await send_to_clients(c.bot, tenant, text, photo=photo)
     await c.message.answer(f"✅ Рассылка отправлена: {sent} клиентам")
     await c.answer()
