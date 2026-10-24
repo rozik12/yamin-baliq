@@ -17,12 +17,16 @@ from aiogram.types import (BufferedInputFile, CallbackQuery, InlineKeyboardButto
 from i18n import LANGS, T, variants
 from store import Store, day_start, money, now, timedelta
 
-ADMINS = {int(x) for x in os.getenv("ADMIN_IDS", "1755207256,8219891075").replace(" ", "").split(",") if x}
+ADMINS = {int(x) for x in os.getenv("ADMIN_IDS", "1755207256,8219891075,6984514139").replace(" ", "").split(",") if x}
 store = Store(os.getenv("DB_PATH", "pirojki.db"))
 store.seed_defaults()
 router = Router()
 log = logging.getLogger("pirojki")
 _lang = {}
+
+
+# Личная приписка к кнопке «Сегодня» — только для этого администратора
+TODAY_NOTE = {6984514139: "Пожалуйста, не забудьте покормить Розикбека (Спасибо)"}
 
 
 class Add(StatesGroup):
@@ -304,7 +308,10 @@ async def report(m: Message, days, title_key):
     if not is_admin(uid):
         return
     a, b = period(days)
-    await m.answer(fmt_summary(uid, tr(uid, title_key), store.summary(a, b), store.stats_extra(a, b)))
+    text = fmt_summary(uid, tr(uid, title_key), store.summary(a, b), store.stats_extra(a, b))
+    if title_key == "t_today" and uid in TODAY_NOTE:
+        text += "\n\n" + TODAY_NOTE[uid]
+    await m.answer(text)
 
 
 @router.message(F.text.in_(variants("b_today")))

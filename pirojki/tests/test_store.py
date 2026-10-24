@@ -54,7 +54,7 @@ class T(unittest.TestCase):
         self.assertEqual(money(1234567), "1 234 567 сум")
 
     def test_roles(self):
-        os.environ["ADMIN_IDS"] = "1755207256,8219891075"
+        os.environ["ADMIN_IDS"] = "1755207256,8219891075,6984514139"
         import bot
         self.assertTrue(bot.is_admin(1755207256) and bot.is_admin(8219891075))
         self.assertFalse(bot.is_admin(1))
@@ -120,7 +120,7 @@ class Lang(unittest.TestCase):
         self.assertEqual(ex["avg_qty"], 7.0)
 
     def test_admin_cannot_work(self):
-        os.environ["ADMIN_IDS"] = "1755207256,8219891075"
+        os.environ["ADMIN_IDS"] = "1755207256,8219891075,6984514139"
         import importlib, bot
         importlib.reload(bot)
         bot.store.add_worker(1755207256, "adm")
@@ -148,6 +148,13 @@ class Cart(unittest.TestCase):
             self.assertTrue(any(n in t for t in texts), n)
         self.assertIn("Пирожки с мясом", bot.cart_text(55, "sale", {str(bot.store.products()[0]["id"]): 2}) + "Пирожки с мясом")
 
+
+class Note(unittest.TestCase):
+    def test_note_only_for_one_admin(self):
+        import bot
+        self.assertIn(6984514139, bot.ADMINS)
+        self.assertEqual(list(bot.TODAY_NOTE), [6984514139])
+        self.assertIn("Розикбека", bot.TODAY_NOTE[6984514139])
 
 
 if __name__ == "__main__":
