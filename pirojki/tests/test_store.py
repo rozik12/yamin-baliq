@@ -168,5 +168,76 @@ class AdminMade(unittest.TestCase):
         self.assertFalse(bot.is_worker(1755207256))
 
 
+class StatsDelete(unittest.TestCase):
+    def setUp(self):
+        self.s = Store()
+        self.s.add_product("A", 100)
+        self.s.add_product("B", 50)
+        self.a, self.b = [p["id"] for p in self.s.products()]
+
+    def test_parse_range(self):
+        from store import parse_range
+        r = parse_range("01.10 - 15.10")
+        self.assertEqual((r[1] - r[0]).days, 15)
+        self.assertEqual((parse_range("15.10")[1] - parse_range("15.10")[0]).days, 1)
+        self.assertEqual(parse_range("15.10 - 01.10"), parse_range("01.10 - 15.10"))
+        self.assertIsNone(parse_range("31.02"))
+        self.assertIsNone(parse_range("привет"))
+        self.assertEqual(parse_range("01.01.2025")[0].year, 2025)
+
+    def test_series_and_delete(self):
+        y = now() - timedelta(days=2)
+        self.s.record(1, "W", "sale", self.a, 3, ts=y)
+        self.s.record(1, "W", "sale", self.b, 2)
+        self.s.record(1, "W", "made", self.a, 9)
+        a, b = day_start() - timedelta(days=3), day_start() + timedelta(days=1)
+        ser = self.s.daily_series(a, b)
+        self.assertEqual(len(ser), 4)
+        self.assertEqual(sum(x[1] for x in ser), 5)
+        cn = self.s.range_counts(day_start(), b)
+        self.assertEqual((cn["n"], cn["sales"], cn["made"]), (2, 1, 1))
+        self.assertEqual(self.s.delete_range(day_start(), b), 2)
+        self.assertEqual(self.s.range_counts(a, b)["n"], 1)  # вчерашние на месте
+
+    def test_hourly(self):
+        self.s.record(1, "W", "sale", self.a, 3)
+        h = self.s.hourly_series(day_start(), day_start() + timedelta(days=1))
+        self.assertEqual(sum(v for _, v in h), 3)
+        self.assertEqual(self.s.hourly_series(day_start() - timedelta(days=5), day_start() - timedelta(days=4)), [])
+
+    def test_chart_png(self):
+        import charts
+        png = charts.render("T", [("01.10", 3), ("02.10", 0), ("03.10", 7)], "Продажи", [("Пирожки с мясом", 7)], "Топ", "шт")
+        self.assertTrue(png.startswith(b"\x89PNG"))
+
+    def test_advice(self):
+        from advice import advice
+        a, b = day_start() - timedelta(days=6), day_start() + timedelta(days=1)
+        self.assertEqual(advice(self.s, a, b)[0][0], "adv_nosales")
+        for i in range(6):
+            self.s.record(1, "W", "sale", self.a, 2 + 3 * i, ts=now() - timedelta(days=5 - i))
+        self.s.record(1, "W", "made", self.b, 40)
+        keys = [k for k, _ in advice(self.s, a, b)]
+        self.assertIn("adv_prices" if False else "adv_up", keys)
+        self.assertIn("adv_dead", keys)
+
+    def test_tips_render_all_langs(self):
+        import bot
+        from advice import advice
+        bot.store.db.execute("DELETE FROM records")
+        pid = bot.store.products()[0]["id"]
+        for i in range(6):
+            bot.store.record(5, "W", "sale", pid, 10 + i, ts=now() - timedelta(days=5 - i))
+        bot.store.record(5, "W", "made", pid, 200)
+        a, b = day_start() - timedelta(days=6), day_start() + timedelta(days=1)
+        tips = advice(bot.store, a, b)
+        self.assertTrue(tips)
+        for l in ("ru", "uz", "en"):
+            bot._lang[777] = l
+            for k, p in tips:
+                self.assertIn("•", bot.render_tip(777, k, p))
+        bot.store.db.execute("DELETE FROM records")
+
+
 if __name__ == "__main__":
     unittest.main()

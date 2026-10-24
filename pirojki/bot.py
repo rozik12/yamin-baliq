@@ -15,7 +15,9 @@ from aiogram.types import (BufferedInputFile, CallbackQuery, InlineKeyboardButto
                            KeyboardButton, Message, ReplyKeyboardMarkup)
 
 from i18n import LANGS, T, variants
-from store import Store, day_start, money, now, timedelta
+import charts
+from advice import advice
+from store import Store, day_start, money, now, parse_range, timedelta
 
 ADMINS = {int(x) for x in os.getenv("ADMIN_IDS", "1755207256,8219891075,6984514139").replace(" ", "").split(",") if x}
 store = Store(os.getenv("DB_PATH", "pirojki.db"))
@@ -31,6 +33,14 @@ TODAY_NOTE = {6984514139: "Пожалуйста, не забудьте поко�
 
 class Add(StatesGroup):
     product = State()
+
+
+class Stat(StatesGroup):
+    custom = State()
+
+
+class Del(StatesGroup):
+    custom = State()
 
 
 def is_admin(uid):
@@ -65,8 +75,8 @@ def pn(uid, p):
 def menu(uid):
     k = lambda key: KeyboardButton(text=tr(uid, key))
     if is_admin(uid):
-        rows = [[k("b_made"), k("b_undo")], [k("b_today"), k("b_week"), k("b_month")], [k("b_stock"), k("b_workers")],
-                [k("b_products"), k("b_invite")], [k("b_export"), k("b_lang")]]
+        rows = [[k("b_made"), k("b_undo")], [k("b_today"), k("b_week"), k("b_month")], [k("b_stats"), k("b_stock")],
+                [k("b_workers"), k("b_products")], [k("b_invite"), k("b_export")], [k("b_delete"), k("b_lang")]]
     else:
         rows = [[k("b_sale"), k("b_made")], [k("b_mine"), k("b_undo")], [k("b_lang")]]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -343,6 +353,154 @@ async def stock(m: Message):
     names = {p["name"]: pn(uid, p) for p in store.db.execute("SELECT * FROM products").fetchall()}
     body = "\n".join(f"• {names.get(n, n)}: {q} {T['pcs'][lang(uid)]}" for n, q in sorted(st.items())) or tr(uid, "no_data")
     await m.answer(tr(uid, "stock_h") + "\n" + body)
+
+
+# ---------- график, советы, удаление данных (только админы)
+
+def fd(d):
+    return d.strftime("%d.%m.%Y")
+
+
+def period_kb(uid, prefix, with_ranges=True):
+    row = lambda *keys: [InlineKeyboardButton(text=tr(uid, k), callback_data=f"{prefix}:{c}") for k, c in keys]
+    rows = [row(("per_today", "today"), ("per_yday", "yday"))]
+    if with_ranges:
+        rows.append(row(("per_7", "7"), ("per_30", "30")))
+    rows.append(row(("per_custom", "custom")))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def preset(code):
+    t = day_start()
+    return {"today": (t, t + timedelta(days=1)), "yday": (t - timedelta(days=1), t),
+            "7": period(7), "30": period(30)}.get(code)
+
+
+def render_tip(uid, key, params):
+    L = lang(uid)
+    kw = dict(params)
+    if "pid" in kw:
+        kw["p_name"] = pn(uid, store.product(kw["pid"]))
+    if "pids" in kw:
+        kw["names"] = ", ".join(pn(uid, store.product(i)) for i in kw["pids"])
+    if "best" in kw:
+        kw["best"], kw["worst"] = T["wd"][L][kw["best"]], T["wd"][L][kw["worst"]]
+    return "• " + T[key][L].format(**kw)
+
+
+async def run_stats(m: Message, a, b):
+    uid = m.chat.id
+    L = lang(uid)
+    b = min(b, a + timedelta(days=366))
+    s, ex = store.summary(a, b), store.stats_extra(a, b)
+    if (b - a).days <= 1:
+        series, st = store.hourly_series(a, b), T["chart_hours"][L]
+    else:
+        series = [(f"{d[8:10]}.{d[5:7]}", q) for d, q, _ in store.daily_series(a, b)]
+        st = T["chart_days"][L]
+    top = [(pn(uid, store.product(pid)), q) for pid, q in ex["top"]]
+    head = tr(uid, "stat_head", a=fd(a), b=fd(b - timedelta(days=1)))
+    if series and any(v for _, v in series):
+        png = await asyncio.to_thread(charts.render, head.replace("📈 ", ""), series, f"{st} ({T['chart_sales'][L]})",
+                                      top, T["chart_top"][L], T["pcs"][L])
+        await m.answer_photo(BufferedInputFile(png, "stats.png"))
+    tips = "\n".join(render_tip(uid, k, p) for k, p in advice(store, a, b))
+    await m.answer(fmt_summary(uid, head, s, ex) + "\n\n" + tr(uid, "tips_h") + "\n" + tips)
+
+
+@router.message(F.text.in_(variants("b_stats")))
+async def stats_menu(m: Message, state: FSMContext):
+    if is_admin(m.from_user.id):
+        await state.clear()
+        await m.answer(tr(m.from_user.id, "pick_period"), reply_markup=period_kb(m.from_user.id, "sp"))
+
+
+@router.callback_query(F.data.startswith("sp:"))
+async def stats_pick(c: CallbackQuery, state: FSMContext):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        return await c.answer()
+    code = c.data[3:]
+    await c.answer()
+    if code == "custom":
+        await state.set_state(Stat.custom)
+        return await c.message.answer(tr(uid, "ask_range"))
+    pr = preset(code)
+    if pr:
+        await run_stats(c.message, *pr)
+
+
+@router.message(Stat.custom)
+async def stats_custom(m: Message, state: FSMContext):
+    uid = m.from_user.id
+    if not is_admin(uid):
+        return
+    r = parse_range(m.text)
+    if not r:
+        return await m.answer(tr(uid, "bad_range"))
+    await state.clear()
+    await run_stats(m, *r)
+
+
+@router.message(F.text.in_(variants("b_delete")))
+async def delete_menu(m: Message, state: FSMContext):
+    if is_admin(m.from_user.id):
+        await state.clear()
+        await m.answer(tr(m.from_user.id, "del_pick"), reply_markup=period_kb(m.from_user.id, "dp", with_ranges=False))
+
+
+async def ask_delete(msg: Message, uid, a, b):
+    cn = store.range_counts(a, b)
+    if not cn["n"]:
+        return await msg.answer(tr(uid, "del_empty"))
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=tr(uid, "del_yes"), callback_data=f"dy:{a:%Y-%m-%d}:{(b - timedelta(days=1)):%Y-%m-%d}"),
+        InlineKeyboardButton(text=tr(uid, "cancel_btn"), callback_data="ccancel")]])
+    await msg.answer(tr(uid, "del_confirm", a=fd(a), b=fd(b - timedelta(days=1)), n=cn["n"], s=cn["sales"], m=cn["made"],
+                        rev=money(cn["revenue"], lang(uid))), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("dp:"))
+async def delete_pick(c: CallbackQuery, state: FSMContext):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        return await c.answer()
+    code = c.data[3:]
+    await c.answer()
+    if code == "custom":
+        await state.set_state(Del.custom)
+        return await c.message.answer(tr(uid, "ask_range"))
+    await ask_delete(c.message, uid, *preset(code))
+
+
+@router.message(Del.custom)
+async def delete_custom(m: Message, state: FSMContext):
+    uid = m.from_user.id
+    if not is_admin(uid):
+        return
+    r = parse_range(m.text)
+    if not r:
+        return await m.answer(tr(uid, "bad_range"))
+    await state.clear()
+    await ask_delete(m, uid, *r)
+
+
+@router.callback_query(F.data.startswith("dy:"))
+async def delete_do(c: CallbackQuery):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        return await c.answer()
+    _, d1, d2 = c.data.split(":")
+    a = day_start(now().replace(**dict(zip(("year", "month", "day"), map(int, d1.split("-"))))))
+    b = day_start(now().replace(**dict(zip(("year", "month", "day"), map(int, d2.split("-")))))) + timedelta(days=1)
+    n = store.delete_range(a, b)
+    await c.message.edit_text(tr(uid, "del_done", n=n))
+    await c.answer()
+    for adm in ADMINS - {uid}:
+        try:
+            await c.bot.send_message(adm, tr(adm, "del_notice", who=uname(c.from_user), n=n, a=fd(a), b=fd(b - timedelta(days=1))))
+        except Exception:
+            pass
 
 
 # ---------- работники

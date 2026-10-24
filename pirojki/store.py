@@ -198,10 +198,68 @@ class Store:
                 made[r["product"]] = made.get(r["product"], 0) + r["qty"]
         return {"sold": sold, "made": made, "revenue": revenue, "by_worker": by_worker}
 
+    def daily_series(self, start, end):
+        """[(дата 'YYYY-MM-DD', штук продано, сумма)] по каждому дню периода, нули включены."""
+        sums = {}
+        for r in self.between(start, end):
+            if r["kind"] == "sale":
+                d = sums.setdefault(r["ts"][:10], [0, 0])
+                d[0] += r["qty"]
+                d[1] += r["amount"]
+        out, d = [], start
+        while d < end:
+            k = d.strftime("%Y-%m-%d")
+            out.append((k, *sums.get(k, [0, 0])))
+            d += timedelta(days=1)
+        return out
+
+    def hourly_series(self, start, end):
+        h = {}
+        for r in self.between(start, end):
+            if r["kind"] == "sale":
+                k = int(r["ts"][11:13])
+                h[k] = h.get(k, 0) + r["qty"]
+        if not h:
+            return []
+        return [(f"{i:02d}:00", h.get(i, 0)) for i in range(min(h), max(h) + 1)]
+
+    def range_counts(self, start, end):
+        rows = self.between(start, end)
+        return {"n": len(rows), "sales": sum(1 for r in rows if r["kind"] == "sale"),
+                "made": sum(1 for r in rows if r["kind"] == "made"),
+                "revenue": sum(r["amount"] for r in rows if r["kind"] == "sale")}
+
+    def delete_range(self, start, end):
+        cur = self.db.execute("DELETE FROM records WHERE ts>=? AND ts<?", (start.isoformat(), end.isoformat()))
+        self.db.commit()
+        return cur.rowcount
+
     def stock(self, start, end):
         s = self.summary(start, end)
         names = set(s["made"]) | set(s["sold"])
         return {n: s["made"].get(n, 0) - s["sold"].get(n, 0) for n in names}
+
+
+def parse_range(text, today=None):
+    """«15.10» / «15.10.2026» / «01.10 - 15.10» -> (начало, конец-исключая) в часовом поясе Ташкента, или None."""
+    import re
+    today = today or now()
+    found = re.findall(r"(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?", text or "")
+    if not found or len(found) > 2:
+        return None
+    days = []
+    for d, m, y in found:
+        y = int(y) if y else today.year
+        if y < 100:
+            y += 2000
+        try:
+            days.append(day_start(today.replace(year=y, month=int(m), day=int(d))))
+        except ValueError:
+            return None
+    a, b = days[0], days[-1]
+    if b < a:
+        a, b = b, a
+    return a, b + timedelta(days=1)
 
 
 CUR = {"ru": "сум", "uz": "so'm", "en": "UZS"}
