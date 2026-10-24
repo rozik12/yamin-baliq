@@ -301,12 +301,18 @@ async def start(m: Message, state: FSMContext, command: CommandObject):
         set_user_tenant(uid, row[0])
         return await m.answer(f"✅ Вы администратор заведения «{get_tenant(row[0])['name']}».", reply_markup=main_kb(uid))
     if arg:
-        slug, _, ref = arg.partition("--r")
+        slug, *flags = arg.split("--")
+        ref = next((f[1:] for f in flags if f[:1] == "r" and f[1:].isdigit()), "")
+        source = next((f[1:] for f in flags if f[:1] == "s" and f[1:]), None)
         tenant = get_tenant(slug)
         if not (tenant and tenant["active"]):
             return await m.answer("Заведение не найдено. Проверьте ссылку.")
         is_new = not db.execute("SELECT 1 FROM profiles WHERE tenant=? AND user_id=?", (slug, uid)).fetchone()
         set_user_tenant(uid, slug)
+        if source and is_new:
+            db.execute("INSERT OR IGNORE INTO profiles(tenant,user_id,name,source) VALUES(?,?,?,?)", (slug, uid, str(m.from_user.full_name or ""), source[:30]))
+            db.execute("UPDATE profiles SET source=COALESCE(source, ?) WHERE tenant=? AND user_id=?", (source[:30], slug, uid))
+            db.commit()
         if ref.isdigit() and is_new and int(ref) != uid and not is_admin(uid, slug) and db.execute(
                 "SELECT 1 FROM profiles WHERE tenant=? AND user_id=?", (slug, int(ref))).fetchone():
             db.execute("INSERT OR IGNORE INTO referrals(tenant,user_id,referrer) VALUES(?,?,?)", (slug, uid, int(ref)))
@@ -638,8 +644,18 @@ async def ask_rating(bot, uid, module, ref):
         logging.warning("rating request not delivered")
 
 
+async def rating_comment_done(bot, uid, ans, ctx):
+    await notify_admins(bot, ctx["tenant"], f"💬 Комментарий к оценке {ctx['n']}/5 ({ctx['module']} №{ctx['ref']}):\n{ans['text']}\ntg://user?id={uid}")
+    await bot.send_message(uid, t(uid, "rate_thx"), reply_markup=main_kb(uid))
+
+
+register_wizard("rating_comment", [{"key": "text", "prompt": "rate_why", "type": "text", "optional": True}], rating_comment_done)
+TXT["rate_why"] = {"ru": "Что можно улучшить? Напишите коротко (или отправьте «-»).", "uz": "Nimani yaxshilash mumkin? Qisqa yozing (yoki «-»).",
+                   "en": "What could we improve? Write briefly (or send “-”)."}
+
+
 @router.callback_query(F.data.regexp(r"^rt:[a-z]+:\d+:[1-5]$"))
-async def rate(c: CallbackQuery):
+async def rate(c: CallbackQuery, state: FSMContext = None):
     uid, tenant = c.from_user.id, tenant_of(c.from_user.id)
     _, module, ref, n = c.data.split(":")
     if not tenant:
@@ -649,6 +665,8 @@ async def rate(c: CallbackQuery):
     await c.message.edit_text(t(uid, "rate_thx"))
     if int(n) <= 2:
         await notify_admins(c.bot, tenant, f"⚠️ Низкая оценка {n}/5 ({module} №{ref}), клиент tg://user?id={uid}")
+    if int(n) <= 3 and state is not None:
+        await start_wizard(c.message, state, "rating_comment", uid, {"tenant": tenant, "module": module, "ref": int(ref), "n": int(n)})
     await c.answer()
 
 
@@ -659,6 +677,25 @@ def avg_rating(tenant, module):
 
 TXT["use_menu"] = {"ru": "Выберите действие кнопками внизу 👇", "uz": "Pastdagi tugmalar bilan amalni tanlang 👇",
                    "en": "Please use the buttons below 👇"}
+def faq_match(tenant, text):
+    """Подбирает ответ из FAQ по общим словам вопроса клиента (3+ буквы)."""
+    words = {w for w in "".join(ch if ch.isalnum() else " " for ch in text.casefold()).split() if len(w) >= 3}
+    if not words:
+        return None
+    try:
+        rows = db.execute("SELECT q, a FROM faq WHERE tenant=?", (tenant,)).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    best, score = None, 0
+    for q, a in rows:
+        qwords = {w for w in "".join(ch if ch.isalnum() else " " for ch in q.casefold()).split() if len(w) >= 3}
+        stems = {w[:5] for w in qwords}
+        common = sum(1 for w in words if w in qwords or w[:5] in stems)
+        if common > score:
+            best, score = a, common
+    return best if score >= 1 and score * 2 >= min(len(words), 3) else None
+
+
 fallback = Router()
 
 
@@ -670,6 +707,9 @@ async def unknown_message(m: Message, state: FSMContext):
         return await m.answer("Нажмите «➕ Новое заведение» или «🏢 Пространства». Нужна подсказка: /start", reply_markup=main_kb(uid))
     if not tenant_of(uid):
         return await m.answer(WELCOME_NEW, reply_markup=create_kb() if SELF_SIGNUP else None)
+    answer = faq_match(tenant_of(uid), m.text or "")
+    if answer:
+        return await m.answer(f"💡 {answer}")
     await m.answer(t(uid, "use_menu"), reply_markup=main_kb(uid))
 
 
@@ -912,6 +952,25 @@ async def settings_pick(c: CallbackQuery, state: FSMContext):
     await c.answer()
 
 
+for _ddl in ("ALTER TABLE tenants ADD COLUMN paid_until TEXT", "ALTER TABLE profiles ADD COLUMN source TEXT", "ALTER TABLE profiles ADD COLUMN phone TEXT"):
+    try:
+        db.execute(_ddl)
+        db.commit()
+    except sqlite3.OperationalError:
+        pass
+PERIODIC = []  # async fn(bot) — вызываются раз в пару минут вместе со сводкой
+WEEKLY = []
+
+
+def register_periodic(fn):
+    PERIODIC.append(fn)
+
+
+def register_weekly(module, fn):
+    """fn(tenant, today_local: date) -> строки для недельного отчёта (по понедельникам в 9:00)."""
+    WEEKLY.append((module, fn))
+
+
 # ====================== простое подключение бизнеса ======================
 try:
     db.execute("ALTER TABLE tenants ADD COLUMN created_by INTEGER")
@@ -954,6 +1013,8 @@ async def share_pack(bot, uid, slug, caption_prefix=""):
     name = (get_tenant(slug) or {}).get("name", "")
     text = (f"{caption_prefix}🔗 Ссылка для ваших клиентов:\n{link}\n\n"
             f"Готовый текст для Instagram, Telegram и визитки:\n«{name}: заказывайте и записывайтесь в нашем Telegram-боте 👉 {link}»")
+    text += (f"\n\n📌 Чтобы видеть, откуда приходят клиенты, добавьте к ссылке метку: {link}--sinstagram или {link}--stelegram "
+             f"(в статистике появится «Откуда клиенты»).")
     png = qr_png(link)
     if png:
         await bot.send_photo(uid, BufferedInputFile(png, filename="qr.png"), caption=text[:1024] + "\n\n📌 QR-код можно распечатать и поставить на стол или кассу.")
@@ -1083,12 +1144,30 @@ register_settings("*", [("about", "📝 Коротко о вас (для кли�
                         ("daily_summary", "☀️ Утренняя сводка (1 — да, 0 — нет)", "int")])
 
 
+def open_status(tenant, now_utc=None):
+    """True/False по строке часов работы вида «10:00-23:00»; None, если время не распознано."""
+    import re
+    times = re.findall(r"(\d{1,2})[:.](\d{2})", get_setting(tenant, "hours", "") or "")
+    if len(times) < 2:
+        return None
+    start = int(times[0][0]) * 60 + int(times[0][1])
+    end = int(times[1][0]) * 60 + int(times[1][1])
+    local = local_today(tenant, now_utc)
+    now_min = local.hour * 60 + local.minute
+    if start == end:
+        return True
+    return start <= now_min < end if start < end else (now_min >= start or now_min < end)
+
+
 @router.message(is_btn("b_about"))
 async def about_cmd(m: Message):
     uid, tenant = m.from_user.id, tenant_of(m.from_user.id)
     if not tenant:
         return
     lines = [f"<b>{brand_of(uid)}</b>"]
+    status = open_status(tenant)
+    if status is not None:
+        lines.append("🟢 Сейчас открыто" if status else "🔴 Сейчас закрыто")
     for key, icon in (("about", ""), ("address", "📍 "), ("hours", "🕒 "), ("phone", "📞 "), ("instagram", "📷 ")):
         value = get_setting(tenant, key)
         if value:
@@ -1119,9 +1198,9 @@ async def invite_cmd(m: Message):
 
 
 def export_clients(tenant):
-    rows = db.execute("SELECT user_id, name, COALESCE(username,''), joined FROM profiles WHERE tenant=? AND user_id NOT IN "
+    rows = db.execute("SELECT user_id, name, COALESCE(username,''), joined, COALESCE(source,''), COALESCE(phone,'') FROM profiles WHERE tenant=? AND user_id NOT IN "
                       "(SELECT user_id FROM tenant_admins WHERE tenant=?) ORDER BY joined", (tenant, tenant)).fetchall()
-    return ["ID", "Имя", "Username", "Первый заход"], rows
+    return ["ID", "Имя", "Username", "Первый заход", "Источник", "Телефон"], rows
 
 
 EXPORTS.append(("*", "clients.csv", export_clients))
@@ -1241,12 +1320,105 @@ async def summary_loop(bot):
         await asyncio.sleep(120)
         try:
             await send_daily_summaries(bot)
+            await send_weekly_reports(bot)
             await nudge_stale(bot)
+            await check_subscriptions(bot)
+            for fn in PERIODIC:
+                await fn(bot)
         except Exception:
             logging.exception("summary loop failed")
 
 
 register_background(summary_loop)
+
+
+# ====================== подписка клиентов платформы, пауза, резервная копия, недельный отчёт ======================
+@router.message(Command("setpaid"))
+async def set_paid(m: Message, command: CommandObject):
+    """/setpaid slug ГГГГ-ММ-ДД — оплачено до даты (включительно); после даты заведение отключается."""
+    parts = (command.args or "").split()
+    if not (is_owner(m.from_user.id) and len(parts) == 2 and get_tenant(parts[0].lower())):
+        return await m.answer("Использование: /setpaid slug 2026-12-31") if is_owner(m.from_user.id) else None
+    try:
+        day = dt.datetime.strptime(parts[1], "%Y-%m-%d").date()
+    except ValueError:
+        return await m.answer("Дата в формате ГГГГ-ММ-ДД")
+    slug = parts[0].lower()
+    db.execute("UPDATE tenants SET paid_until=?, active=? WHERE slug=?", (day.isoformat(), 1 if day >= local_today(slug).date() else 0, slug))
+    db.commit()
+    await m.answer(f"✅ «{get_tenant(slug)['name']}» оплачено до {day.isoformat()}")
+
+
+@router.message(Command("pausespace"))
+@router.message(Command("resumespace"))
+async def pause_space(m: Message, command: CommandObject):
+    slug = (command.args or "").strip().lower()
+    if not (is_owner(m.from_user.id) and get_tenant(slug)):
+        return
+    on = (m.text or "").startswith("/resumespace")
+    db.execute("UPDATE tenants SET active=? WHERE slug=?", (1 if on else 0, slug))
+    db.commit()
+    await m.answer(f"{'▶️ Включено' if on else '⏸ Отключено'}: {slug}")
+
+
+async def check_subscriptions(bot, now_utc=None):
+    """Предупреждает за 3 и 1 день и отключает заведения с истёкшей подпиской. Возвращает число отключённых."""
+    off = 0
+    for slug, name, paid, active in db.execute("SELECT slug, name, paid_until, active FROM tenants WHERE paid_until IS NOT NULL").fetchall():
+        left = (dt.date.fromisoformat(paid) - local_today(slug, now_utc).date()).days
+        if left < 0 and active:
+            db.execute("UPDATE tenants SET active=0 WHERE slug=?", (slug,))
+            db.commit()
+            await notify_admins(bot, slug, f"⛔ Подписка «{name}» закончилась {paid}. Бот приостановлен. Для продления свяжитесь с поддержкой.")
+            await notify_owners(bot, f"⛔ Отключено за неоплату: «{name}» ({slug}), срок был {paid}")
+            off += 1
+        elif active and left in (3, 1) and get_setting(slug, "warned") != f"{paid}:{left}":
+            set_setting(slug, "warned", f"{paid}:{left}")
+            await notify_admins(bot, slug, f"⚠️ Подписка «{name}» заканчивается через {left} дн. ({paid}). Продлите, чтобы бот не остановился.")
+    return off
+
+
+@router.message(Command("backup"))
+async def backup_cmd(m: Message):
+    if not is_owner(m.from_user.id):
+        return
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "backup.db")
+        dest = sqlite3.connect(path)
+        db.backup(dest)
+        dest.close()
+        data = open(path, "rb").read()
+    await m.answer_document(BufferedInputFile(data, filename=f"platform-{dt.date.today().isoformat()}.db"), caption="💾 Резервная копия всей базы. Храните в безопасном месте: там данные клиентов.")
+
+
+async def send_weekly_reports(bot, now_utc=None):
+    sent = 0
+    for (slug,) in db.execute("SELECT slug FROM tenants WHERE active=1").fetchall():
+        local = local_today(slug, now_utc)
+        key = local.strftime("%Y-%m-%d")
+        if local.weekday() != 0 or local.hour != 9 or get_setting(slug, "last_weekly") == key or get_setting(slug, "daily_summary", "1") == "0":
+            continue
+        set_setting(slug, "last_weekly", key)
+        mods = get_tenant(slug)["module"].split(",")
+        lines = [f"📅 Итоги недели «{get_tenant(slug)['name']}»"]
+        for mod, fn in WEEKLY:
+            if mod in mods:
+                lines += fn(slug, local.date())
+        new7 = db.execute("SELECT COUNT(*) FROM profiles WHERE tenant=? AND date(joined)>=date('now','-6 days') AND user_id NOT IN (SELECT user_id FROM tenant_admins WHERE tenant=?)", (slug, slug)).fetchone()[0]
+        lines.append(f"🆕 Новых клиентов: {new7}")
+        await notify_admins(bot, slug, "\n".join(lines))
+        sent += 1
+    return sent
+
+
+def sources_stats(tenant):
+    rows = db.execute("SELECT source, COUNT(*) FROM profiles WHERE tenant=? AND source IS NOT NULL AND user_id NOT IN (SELECT user_id FROM tenant_admins WHERE tenant=?) "
+                      "GROUP BY source ORDER BY 2 DESC LIMIT 5", (tenant, tenant)).fetchall()
+    return ["📌 Откуда клиенты: " + ", ".join(f"{s_} {n}" for s_, n in rows)] if rows else []
+
+
+STATS.append(("*", sources_stats))
 
 
 # ====================== фоновые задачи и запуск ======================

@@ -1,5 +1,7 @@
 """Модуль «Рекрутер»: вакансии, отклики кандидатов, статусы, отчёт."""
+import datetime as dt
 import json
+import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -39,6 +41,10 @@ core.register_texts({
     "closed": {"ru": "Эта вакансия закрыта", "uz": "Bu vakansiya yopilgan", "en": "This position is closed"},
     "apps_empty": {"ru": "У вас пока нет откликов", "uz": "Hozircha arizalaringiz yo'q", "en": "You have no applications yet"},
     "apps_title": {"ru": "📄 Ваши отклики:", "uz": "📄 Arizalaringiz:", "en": "📄 Your applications:"},
+    "rc_interview": {"ru": "📅 Приглашаем на собеседование по вакансии «{job}»:\n{when}\n{place}", "uz": "📅 «{job}» vakansiyasi bo'yicha suhbatga taklif qilamiz:\n{when}\n{place}",
+                     "en": "📅 You are invited to an interview for “{job}”:\n{when}\n{place}"},
+    "rc_reminder": {"ru": "⏰ Напоминаем: собеседование «{job}» сегодня в {time}. {place}", "uz": "⏰ Eslatma: «{job}» suhbati bugun {time} da. {place}", "en": "⏰ Reminder: interview for “{job}” today at {time}. {place}"},
+    "rc_message": {"ru": "✉️ Сообщение по вашему отклику №{n}:", "uz": "✉️ №{n} arizangiz bo'yicha xabar:", "en": "✉️ Message about your application #{n}:"},
     "s_new": {"ru": "на рассмотрении", "uz": "ko'rib chiqilmoqda", "en": "under review"},
     "s_invited": {"ru": "вас приглашают на собеседование 🎉", "uz": "sizni suhbatga taklif qilishadi 🎉", "en": "you are invited to an interview 🎉"},
     "s_rejected": {"ru": "к сожалению, отказ. Спасибо за интерес!", "uz": "afsuski, rad etildi. Qiziqishingiz uchun rahmat!",
@@ -62,6 +68,11 @@ core.register_help("recruiter", "👔 Подбор персонала", [
 
 db.execute("CREATE TABLE IF NOT EXISTS vacancies(id INTEGER PRIMARY KEY, tenant TEXT, title TEXT, city TEXT, salary TEXT, description TEXT, active INTEGER DEFAULT 1)")
 db.execute("CREATE TABLE IF NOT EXISTS applications(id INTEGER PRIMARY KEY, tenant TEXT, vacancy_id INT, user_id INT, name TEXT, phone TEXT, about TEXT, cv TEXT, status TEXT DEFAULT 'new', created TEXT DEFAULT CURRENT_TIMESTAMP)")
+for _ddl in ("ALTER TABLE applications ADD COLUMN interview_at TEXT", "ALTER TABLE applications ADD COLUMN interview_info TEXT", "ALTER TABLE applications ADD COLUMN ireminded INTEGER DEFAULT 0"):
+    try:
+        db.execute(_ddl)
+    except Exception:
+        pass
 db.commit()
 
 STATUS_RU = {"new": "🆕 новый", "invited": "📞 приглашён", "rejected": "❌ отказ", "hired": "🎉 принят"}
@@ -187,8 +198,11 @@ def card_kb(aid, status):
     if status in ("new", "invited"):
         if status == "new":
             b.button(text="📞 Пригласить", callback_data=f"cand:{aid}:invited")
+        b.button(text="📅 Собеседование", callback_data=f"rci:{aid}")
         b.button(text="🎉 Принять", callback_data=f"cand:{aid}:hired")
         b.button(text="❌ Отказ", callback_data=f"cand:{aid}:rejected")
+    if status in ("new", "invited", "hired"):
+        b.button(text="✉️ Написать", callback_data=f"rcm:{aid}")
     return b.adjust(1).as_markup()
 
 
@@ -362,3 +376,94 @@ def daily_lines(tenant, today):
 
 core.register_daily("recruiter", daily_lines)
 core.register_stale("applications", ("new",), 60, "Отклик")
+
+
+# ---------------- собеседование и сообщения кандидату ----------------
+def own_app(aid, admin_id):
+    tenant = tenant_of(admin_id)
+    if not (tenant and is_admin(admin_id)):
+        return None
+    return db.execute("SELECT a.id, a.user_id, v.title FROM applications a JOIN vacancies v ON v.id=a.vacancy_id WHERE a.id=? AND a.tenant=?", (aid, tenant)).fetchone()
+
+
+async def interview_saved(bot, uid, ans, ctx):
+    row = db.execute("SELECT a.user_id, v.title FROM applications a JOIN vacancies v ON v.id=a.vacancy_id WHERE a.id=? AND a.tenant=?", (ctx["aid"], ctx["tenant"])).fetchone()
+    if not row:
+        return
+    local = dt.datetime.strptime(f"{ans['day']} {ans['time']}", "%Y-%m-%d %H:%M")
+    utc = local - dt.timedelta(hours=core.tz_hours(ctx["tenant"]))
+    place = ans.get("place") or ""
+    db.execute("UPDATE applications SET interview_at=?, interview_info=?, ireminded=0, status='invited' WHERE id=?", (utc.strftime("%Y-%m-%d %H:%M"), place, ctx["aid"]))
+    db.commit()
+    try:
+        await bot.send_message(row[0], t(row[0], "rc_interview", job=row[1], when=f"{ans['day']} {ans['time']}", place=place))
+        await bot.send_message(uid, f"✅ Кандидат приглашён на {ans['day']} {ans['time']}. За 2 часа я напомню ему и вам.", reply_markup=main_kb(uid))
+    except Exception:
+        await bot.send_message(uid, "Не удалось отправить приглашение: кандидат заблокировал бота", reply_markup=main_kb(uid))
+
+
+core.register_wizard("interview", [{"key": "day", "prompt": "Дата собеседования? Например 25.12", "type": "date"},
+                                   {"key": "time", "prompt": "Время? Например 15:00", "type": "time"},
+                                   {"key": "place", "prompt": "Где проходит (адрес или ссылка на звонок)?", "type": "text", "optional": True}], interview_saved)
+
+
+@router.callback_query(F.data.startswith("rci:"))
+async def interview_start(c: CallbackQuery, state: FSMContext):
+    aid = int(c.data.split(":")[1])
+    if not own_app(aid, c.from_user.id):
+        return await c.answer("Нет доступа", show_alert=True)
+    await core.start_wizard(c.message, state, "interview", c.from_user.id, {"tenant": tenant_of(c.from_user.id), "aid": aid})
+    await c.answer()
+
+
+async def message_sent(bot, uid, ans, ctx):
+    row = db.execute("SELECT user_id FROM applications WHERE id=? AND tenant=?", (ctx["aid"], ctx["tenant"])).fetchone()
+    if not row:
+        return
+    try:
+        await bot.send_message(row[0], f"{t(row[0], 'rc_message', n=ctx['aid'])}\n{ans['text']}")
+        await bot.send_message(uid, "✅ Отправлено кандидату", reply_markup=main_kb(uid))
+    except Exception:
+        await bot.send_message(uid, "Не удалось отправить: кандидат заблокировал бота", reply_markup=main_kb(uid))
+
+
+core.register_wizard("candidate_msg", [{"key": "text", "prompt": "Напишите сообщение кандидату:", "type": "text"}], message_sent)
+
+
+@router.callback_query(F.data.startswith("rcm:"))
+async def message_start(c: CallbackQuery, state: FSMContext):
+    aid = int(c.data.split(":")[1])
+    if not own_app(aid, c.from_user.id):
+        return await c.answer("Нет доступа", show_alert=True)
+    await core.start_wizard(c.message, state, "candidate_msg", c.from_user.id, {"tenant": tenant_of(c.from_user.id), "aid": aid})
+    await c.answer()
+
+
+async def send_interview_reminders(bot, now_utc=None):
+    now = now_utc or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    sent = 0
+    for aid, tenant, uid, at, place, title in db.execute("SELECT a.id, a.tenant, a.user_id, a.interview_at, COALESCE(a.interview_info,''), v.title FROM applications a "
+                                                         "JOIN vacancies v ON v.id=a.vacancy_id WHERE a.interview_at IS NOT NULL AND a.ireminded=0").fetchall():
+        when = dt.datetime.strptime(at, "%Y-%m-%d %H:%M")
+        if dt.timedelta(0) <= when - now <= dt.timedelta(hours=2):
+            db.execute("UPDATE applications SET ireminded=1 WHERE id=?", (aid,))
+            db.commit()
+            local = (when + dt.timedelta(hours=core.tz_hours(tenant))).strftime("%H:%M")
+            try:
+                await bot.send_message(uid, t(uid, "rc_reminder", job=title, time=local, place=place))
+            except Exception:
+                logging.warning("interview reminder not delivered")
+            await notify_admins(bot, tenant, f"⏰ Через 2 часа собеседование: отклик №{aid}, «{title}» в {local}")
+            sent += 1
+    return sent
+
+
+core.register_periodic(send_interview_reminders)
+
+
+def weekly_lines(tenant, today):
+    n = db.execute("SELECT COUNT(*) FROM applications WHERE tenant=? AND date(created)>=date('now','-6 days')", (tenant,)).fetchone()[0]
+    return [f"👔 Новых откликов за неделю: {n}"]
+
+
+core.register_weekly("recruiter", weekly_lines)

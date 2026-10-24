@@ -14,7 +14,7 @@ OWNER, ADM_A, ADM_B, CLI_A, CLI_B, CLI_C = 111, 201, 202, 5, 6, 7
 class Base(unittest.TestCase):
     def setUp(self):
         for t in ("products", "shop_orders", "shop_bonuses", "shop_promos", "leads", "services", "bookings", "dayoff", "profiles", "referrals",
-                  "scheduled", "users", "tenants", "tenant_admins", "user_tenant", "settings", "ratings", "faq", "tickets", "invites"):
+                  "scheduled", "users", "tenants", "tenant_admins", "user_tenant", "settings", "ratings", "faq", "tickets", "invites", "shop_winback"):
             core.db.execute(f"DELETE FROM {t}")
         core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('a','Кафе А','shop,booking,leads',1)")
         core.db.execute("INSERT INTO tenants(slug,name,module,active) VALUES('b','Кафе Б','shop',1)")
@@ -36,7 +36,10 @@ class Base(unittest.TestCase):
         run(core.wizard_input(msg("-", uid), st))
         if shop.max_spend(uid, {}) > 0:
             run(core.wizard_choice(cb("wzc:1", uid), st))
-        run(core.wizard_input(msg("+998901112233", uid), st))
+        if core.db.execute("SELECT phone FROM profiles WHERE tenant=? AND user_id=? AND phone IS NOT NULL AND phone!=''", (core.tenant_of(uid), uid)).fetchone():
+            run(core.wizard_choice(cb("wzc:0", uid), st))  # прошлый номер
+        else:
+            run(core.wizard_input(msg("+998901112233", uid), st))
         run(core.wizard_choice(cb("wzc:0", uid), st))
 
     def finish(self, oid, admin=ADM_A):

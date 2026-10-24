@@ -1,4 +1,5 @@
 """Модуль «Заявки»: форма заявки (тема, имя, телефон, сообщение), воронка статусов, ответ клиенту. Для менеджеров, недвижимости, услуг."""
+import datetime as dt
 import logging
 
 from aiogram import F, Router
@@ -40,11 +41,17 @@ def cleanup(slug):
 
 core.register_module("leads", ["b_lead", "b_myleads"], [ADM_LEADS], cleanup=cleanup, more_labels=[ADM_REPORT])
 core.register_help("leads", "📝 Приём заявок", [
+    "В карточке заявки: «🙋 Взять себе» (ответственный), «⏰ Перезвонить» (напомню в нужное время), «📝 Заметка».",
     "Откройте «⚙️ Ещё» → «⚙️ Настройки»: укажите телефон и темы заявки через запятую (например: Квартира, Дом, Офис).",
     "Нажмите «⚙️ Ещё» → «🔗 Ссылка и QR» и покажите клиентам.",
     "Новые заявки приходят сюда: «В работу», «Выполнена», «✉️ Написать клиенту». Клиент получает уведомления сам.",
 ])
 db.execute("CREATE TABLE IF NOT EXISTS leads(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, topic TEXT, name TEXT, phone TEXT, message TEXT, status TEXT DEFAULT 'new', created TEXT DEFAULT CURRENT_TIMESTAMP)")
+for _ddl in ("ALTER TABLE leads ADD COLUMN assignee INTEGER", "ALTER TABLE leads ADD COLUMN note TEXT", "ALTER TABLE leads ADD COLUMN callback_at TEXT", "ALTER TABLE leads ADD COLUMN source TEXT"):
+    try:
+        db.execute(_ddl)
+    except Exception:
+        pass
 db.commit()
 
 
@@ -53,9 +60,15 @@ def topics(tenant):
 
 
 def card(row):
-    lid, topic, name, phone, message, status, uid = row
-    return (f"Заявка №{lid} · {STATUS_RU[status]}\n" + (f"📌 {topic}\n" if topic else "") +
-            f"👤 {name}\n📞 {phone}\n🔗 tg://user?id={uid}\n\n{message or ''}")[:1000]
+    lid, topic, name, phone, message, status, uid = row[:7]
+    extra = db.execute("SELECT assignee, note, callback_at, source FROM leads WHERE id=?", (lid,)).fetchone() or (None, None, None, None)
+    who = ""
+    if extra[0]:
+        p = db.execute("SELECT name FROM profiles WHERE user_id=? LIMIT 1", (extra[0],)).fetchone()
+        who = f"\n🙋 Ответственный: {p[0] if p and p[0] else extra[0]}"
+    return (f"Заявка №{lid} · {STATUS_RU[status]}\n" + (f"📌 {topic}\n" if topic else "") + (f"🌐 Источник: {extra[3]}\n" if extra[3] else "") +
+            f"👤 {name}\n📞 {phone}\n🔗 tg://user?id={uid}{who}" + (f"\n⏰ Перезвонить: {extra[2][:16]} UTC" if extra[2] else "") +
+            (f"\n📝 Заметка: {extra[1]}" if extra[1] else "") + f"\n\n{message or ''}")[:1000]
 
 
 def card_kb(lid, status):
@@ -65,14 +78,19 @@ def card_kb(lid, status):
     if status in ("new", "work"):
         b.button(text="✅ Выполнена", callback_data=f"lda:{lid}:done")
         b.button(text="❌ Отказ", callback_data=f"lda:{lid}:rejected")
+    if status in ("new", "work"):
+        b.button(text="🙋 Взять себе", callback_data=f"ldt:{lid}")
+        b.button(text="⏰ Перезвонить", callback_data=f"ldc:{lid}")
+    b.button(text="📝 Заметка", callback_data=f"ldn:{lid}")
     b.button(text="✉️ Написать клиенту", callback_data=f"ldm:{lid}")
     return b.adjust(2).as_markup()
 
 
 async def lead_done(bot, uid, ans, ctx):
     tenant = ctx["tenant"]
-    cur = db.execute("INSERT INTO leads(tenant,user_id,topic,name,phone,message) VALUES(?,?,?,?,?,?)",
-                     (tenant, uid, ans.get("topic"), ans["name"], ans["phone"], ans.get("message")))
+    src = db.execute("SELECT source FROM profiles WHERE tenant=? AND user_id=?", (tenant, uid)).fetchone()
+    cur = db.execute("INSERT INTO leads(tenant,user_id,topic,name,phone,message,source) VALUES(?,?,?,?,?,?,?)",
+                     (tenant, uid, ans.get("topic"), ans["name"], ans["phone"], ans.get("message"), src[0] if src else None))
     db.commit()
     lid = cur.lastrowid
     await bot.send_message(uid, t(uid, "ld_ok", n=lid), reply_markup=main_kb(uid))
@@ -168,9 +186,11 @@ async def report(m: Message):
     topics_rows = db.execute("SELECT COALESCE(topic,'—'), COUNT(*) FROM leads WHERE tenant=? GROUP BY topic ORDER BY 2 DESC LIMIT 5", (tenant,)).fetchall()
     total = sum(by.values())
     done = by.get("done", 0)
+    sources = db.execute("SELECT COALESCE(source,'прямая ссылка'), COUNT(*) FROM leads WHERE tenant=? GROUP BY source ORDER BY 2 DESC LIMIT 5", (tenant,)).fetchall()
     await m.answer(f"📈 Заявки\nВсего: {total}\n" + "\n".join(f"{STATUS_RU[k]}: {by.get(k, 0)}" for k in STATUS_RU)
                    + f"\nКонверсия в «выполнена»: {round(done * 100 / total) if total else 0}%\n\nПо темам:\n"
-                   + ("\n".join(f"{n}: {c}" for n, c in topics_rows) or "—"))
+                   + ("\n".join(f"{n}: {c}" for n, c in topics_rows) or "—")
+                   + "\n\nИсточники:\n" + ("\n".join(f"{n}: {c}" for n, c in sources) or "—"))
 
 
 def export_leads(tenant):
@@ -194,3 +214,107 @@ def daily_lines(tenant, today):
 
 core.register_daily("leads", daily_lines)
 core.register_stale("leads", ("new",), 30, "Заявка")
+
+
+# ---------------- ответственный, заметки, перезвонить ----------------
+def own_lead(lid, admin_id):
+    tenant = tenant_of(admin_id)
+    return db.execute("SELECT id, user_id, status FROM leads WHERE id=? AND tenant=?", (lid, tenant)).fetchone() if tenant and is_admin(admin_id) else None
+
+
+async def refresh_card(c, lid):
+    row = db.execute("SELECT id, topic, name, phone, message, status, user_id FROM leads WHERE id=?", (lid,)).fetchone()
+    try:
+        await c.message.edit_text(card(row), reply_markup=card_kb(lid, row[5]))
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("ldt:"))
+async def lead_take(c: CallbackQuery):
+    lid = int(c.data.split(":")[1])
+    row = own_lead(lid, c.from_user.id)
+    if not row or row[2] in ("done", "rejected"):
+        return await c.answer("Недоступно", show_alert=True)
+    db.execute("UPDATE leads SET assignee=?, status='work' WHERE id=?", (c.from_user.id, lid))
+    db.commit()
+    await notify_admins(c.bot, tenant_of(c.from_user.id), f"🙋 {c.from_user.full_name} взял(а) заявку №{lid}")
+    try:
+        await c.bot.send_message(row[1], f"№{lid}: {t(row[1], 'ld_st_work')}")
+    except Exception:
+        pass
+    await refresh_card(c, lid)
+    await c.answer("Заявка за вами")
+
+
+async def note_saved(bot, uid, ans, ctx):
+    old = db.execute("SELECT note FROM leads WHERE id=? AND tenant=?", (ctx["lid"], ctx["tenant"])).fetchone()
+    if old is None:
+        return
+    db.execute("UPDATE leads SET note=? WHERE id=?", (((old[0] + " | ") if old[0] else "") + ans["text"], ctx["lid"]))
+    db.commit()
+    await bot.send_message(uid, "✅ Заметка сохранена", reply_markup=main_kb(uid))
+
+
+core.register_wizard("lead_note", [{"key": "text", "prompt": "Текст заметки (клиент её не увидит):", "type": "text"}], note_saved)
+
+
+@router.callback_query(F.data.startswith("ldn:"))
+async def lead_note(c: CallbackQuery, state: FSMContext):
+    lid = int(c.data.split(":")[1])
+    if not own_lead(lid, c.from_user.id):
+        return await c.answer("Нет доступа", show_alert=True)
+    await core.start_wizard(c.message, state, "lead_note", c.from_user.id, {"tenant": tenant_of(c.from_user.id), "lid": lid})
+    await c.answer()
+
+
+async def callback_saved(bot, uid, ans, ctx):
+    tenant = ctx["tenant"]
+    local = dt.datetime.strptime(f"{ans['day']} {ans['time']}", "%Y-%m-%d %H:%M")
+    utc = local - dt.timedelta(hours=core.tz_hours(tenant))
+    db.execute("UPDATE leads SET callback_at=?, assignee=COALESCE(assignee, ?) WHERE id=? AND tenant=?", (utc.strftime("%Y-%m-%d %H:%M"), uid, ctx["lid"], tenant))
+    db.commit()
+    await bot.send_message(uid, f"⏰ Напомню позвонить по заявке №{ctx['lid']} {ans['day']} в {ans['time']}", reply_markup=main_kb(uid))
+
+
+core.register_wizard("lead_callback", [{"key": "day", "prompt": "Когда перезвонить? Дата, например 25.12", "type": "date"},
+                                       {"key": "time", "prompt": "Во сколько? Например 15:30", "type": "time"}], callback_saved)
+
+
+@router.callback_query(F.data.startswith("ldc:"))
+async def lead_callback(c: CallbackQuery, state: FSMContext):
+    lid = int(c.data.split(":")[1])
+    if not own_lead(lid, c.from_user.id):
+        return await c.answer("Нет доступа", show_alert=True)
+    await core.start_wizard(c.message, state, "lead_callback", c.from_user.id, {"tenant": tenant_of(c.from_user.id), "lid": lid})
+    await c.answer()
+
+
+async def send_callback_reminders(bot, now_utc=None):
+    now = (now_utc or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)).strftime("%Y-%m-%d %H:%M")
+    sent = 0
+    for lid, tenant, name, phone, assignee in db.execute("SELECT id, tenant, name, phone, assignee FROM leads WHERE callback_at IS NOT NULL AND callback_at<=? AND status IN ('new','work')", (now,)).fetchall():
+        db.execute("UPDATE leads SET callback_at=NULL WHERE id=?", (lid,))
+        db.commit()
+        text = f"⏰ Пора перезвонить: заявка №{lid}, {name}, {phone}"
+        if assignee:
+            try:
+                await bot.send_message(assignee, text)
+                sent += 1
+                continue
+            except Exception:
+                pass
+        await notify_admins(bot, tenant, text)
+        sent += 1
+    return sent
+
+
+core.register_periodic(send_callback_reminders)
+
+
+def weekly_lines(tenant, today):
+    n, done = db.execute("SELECT COUNT(*), COALESCE(SUM(status='done'),0) FROM leads WHERE tenant=? AND date(created)>=date('now','-6 days')", (tenant,)).fetchone()
+    return [f"📝 Заявок за неделю: {n}, выполнено {done}"]
+
+
+core.register_weekly("leads", weekly_lines)

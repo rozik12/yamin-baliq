@@ -11,7 +11,7 @@ import core
 from core import db, get_setting, is_admin, is_btn, main_kb, money, notify_admins, t, tenant_of
 
 router = Router()
-ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES, ADM_REPORT, ADM_DAYOFF = "📋 Записи", "➕ Услуга", "🗂 Услуги", "📈 Отчёт записей", "🚫 Выходной"
+ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES, ADM_REPORT, ADM_DAYOFF, ADM_MANUAL = "📋 Записи", "➕ Услуга", "🗂 Услуги", "📈 Отчёт записей", "🚫 Выходной", "➕ Записать клиента"
 STATUS_RU = {"pending": "🆕 ожидает", "confirmed": "✅ подтверждена", "rejected": "❌ отклонена", "cancelled": "🚫 отменена", "done": "🏁 выполнена"}
 BUSY = ("pending", "confirmed")
 
@@ -35,11 +35,17 @@ core.register_texts({
     "bk_confirmed": {"ru": "Запись №{n} подтверждена ✅ {svc}, {when}", "uz": "№{n} yozuv tasdiqlandi ✅ {svc}, {when}", "en": "Booking #{n} confirmed ✅ {svc}, {when}"},
     "bk_rejected": {"ru": "Запись №{n} отклонена ❌ Выберите другое время", "uz": "№{n} yozuv rad etildi ❌ Boshqa vaqtni tanlang", "en": "Booking #{n} declined ❌ Please pick another time"},
     "bk_reminder": {"ru": "⏰ Напоминаем: сегодня в {time} — {svc}", "uz": "⏰ Eslatma: bugun {time} da — {svc}", "en": "⏰ Reminder: today at {time} — {svc}"},
+    "bk_resched": {"ru": "🔄 Перенести", "uz": "🔄 Ko'chirish", "en": "🔄 Reschedule"},
+    "bk_resched_info": {"ru": "Выберите новую дату для «{svc}»:", "uz": "«{svc}» uchun yangi sanani tanlang:", "en": "Pick a new date for “{svc}”:"},
+    "bk_reminder24": {"ru": "📅 Напоминаем: завтра в {time} — {svc}", "uz": "📅 Eslatma: ertaga {time} da — {svc}", "en": "📅 Reminder: tomorrow at {time} — {svc}"},
     "bk_status_pending": {"ru": "ожидает", "uz": "kutilmoqda", "en": "pending"},
     "bk_status_confirmed": {"ru": "подтверждена", "uz": "tasdiqlandi", "en": "confirmed"},
 })
 core.register_settings("booking", [("work_start", "🕘 Начало работы (ЧЧ:ММ)", "time"), ("work_end", "🕕 Конец работы (ЧЧ:ММ)", "time"),
                                    ("tz_offset", "🌍 Часовой пояс (UTC+, например 5)", "int"), ("phone", "📞 Телефон", "text"),
+                                   ("capacity", "👥 Сколько клиентов принимаете одновременно (мастеров)", "int"), ("buffer_min", "⏳ Перерыв между клиентами, мин", "int"),
+                                   ("break_start", "🍽 Обед с (ЧЧ:ММ)", "time"), ("break_end", "🍽 Обед до (ЧЧ:ММ)", "time"),
+                                   ("min_notice_min", "⏱ Минимум минут до записи", "int"), ("days_ahead", "📆 На сколько дней вперёд запись (до 30)", "int"),
                                    ("currency", "💱 Валюта (сум, $ ...)", "text")])
 
 
@@ -50,17 +56,22 @@ def cleanup(slug):
     db.commit()
 
 
-core.register_module("booking", ["b_book", "b_mybook"], [ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES], cleanup=cleanup, more_labels=[ADM_REPORT, ADM_DAYOFF])
+core.register_module("booking", ["b_book", "b_mybook"], [ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES], cleanup=cleanup, more_labels=[ADM_MANUAL, ADM_REPORT, ADM_DAYOFF])
 core.register_help("booking", "💇 Запись на приём", [
     "Нажмите «➕ Услуга»: название, сколько минут длится и цена.",
     "Откройте «⚙️ Ещё» → «⚙️ Настройки»: время начала и конца работы.",
     "Нажмите «⚙️ Ещё» → «🔗 Ссылка и QR» и покажите клиентам.",
     "Новые записи приходят сюда. Нажмите «Подтвердить»: клиент получит сообщение, а за час до визита придёт напоминание.",
+    "Запись по телефону: «⚙️ Ещё» → «➕ Записать клиента». Несколько мастеров, обед и перерывы: «⚙️ Настройки».",
     "Выходной или отпуск: «⚙️ Ещё» → «🚫 Выходной». В эти дни клиенты не смогут записаться.",
 ])
 db.execute("CREATE TABLE IF NOT EXISTS dayoff(tenant TEXT, day TEXT, PRIMARY KEY(tenant, day))")
 db.execute("CREATE TABLE IF NOT EXISTS services(id INTEGER PRIMARY KEY, tenant TEXT, name TEXT, minutes INT, price INT, active INTEGER DEFAULT 1)")
 db.execute("CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, service_id INT, start TEXT, name TEXT, phone TEXT, status TEXT DEFAULT 'pending', reminded INTEGER DEFAULT 0, created TEXT DEFAULT CURRENT_TIMESTAMP)")
+try:
+    db.execute("ALTER TABLE bookings ADD COLUMN reminded24 INTEGER DEFAULT 0")
+except Exception:
+    pass
 db.commit()
 
 
@@ -74,23 +85,30 @@ def hhmm(s):
 
 
 def free_slots(tenant, service, day, now=None):
-    """Свободные времена начала для услуги в день day (date). Слоты идут с шагом длительности услуги."""
+    """Свободные времена начала. Учитывает выходные, обед, перерыв между клиентами, число мастеров (capacity) и минимальное время до записи."""
     now = now or local_now(tenant)
     if is_dayoff(tenant, day):
         return []
     start, end = hhmm(get_setting(tenant, "work_start", "09:00")), hhmm(get_setting(tenant, "work_end", "18:00"))
+    capacity = max(1, int(get_setting(tenant, "capacity", 1) or 1))
+    buffer = max(0, int(get_setting(tenant, "buffer_min", 0) or 0))
+    notice = max(0, int(get_setting(tenant, "min_notice_min", 0) or 0))
     step = max(15, service["minutes"])
+    length = service["minutes"] + buffer
     busy = []
     for st, minutes in db.execute("SELECT b.start, s.minutes FROM bookings b JOIN services s ON s.id=b.service_id "
                                   "WHERE b.tenant=? AND b.status IN ('pending','confirmed') AND b.start LIKE ?", (tenant, f"{day.isoformat()} %")):
         b0 = hhmm(st[11:16])
-        busy.append((b0, b0 + minutes))
+        busy.append((b0, b0 + minutes + buffer))
+    bs, be = get_setting(tenant, "break_start"), get_setting(tenant, "break_end")
+    if bs and be and hhmm(bs) < hhmm(be):
+        busy += [(hhmm(bs), hhmm(be))] * capacity  # обед закрывает все места
     out = []
     cur = start
     while cur + service["minutes"] <= end:
         slot_dt = dt.datetime.combine(day, dt.time(cur // 60, cur % 60))
-        overlaps = any(cur < b1 and cur + service["minutes"] > b0 for b0, b1 in busy)
-        if not overlaps and slot_dt > now:
+        taken = sum(1 for b0, b1 in busy if cur < b1 and cur + length > b0)
+        if taken < capacity and slot_dt > now + dt.timedelta(minutes=notice):
             out.append(f"{cur // 60:02d}:{cur % 60:02d}")
         cur += step
     return out
@@ -118,20 +136,25 @@ async def book_start(m: Message):
     await m.answer(t(uid, "bk_pick_service"), reply_markup=b.adjust(1).as_markup())
 
 
+def date_markup(tenant, sid):
+    today = local_now(tenant).date()
+    days = min(30, max(1, int(get_setting(tenant, "days_ahead", 7) or 7)))
+    b = InlineKeyboardBuilder()
+    for i in range(days):
+        d = today + dt.timedelta(days=i)
+        if is_dayoff(tenant, d):
+            continue
+        b.button(text=d.strftime("%d.%m %a"), callback_data=f"bkd:{sid}:{d.isoformat()}")
+    return b.adjust(2).as_markup()
+
+
 @router.callback_query(F.data.startswith("bks:"))
 async def pick_service(c: CallbackQuery):
     uid, tenant = c.from_user.id, tenant_of(c.from_user.id)
     svc = service_of(int(c.data.split(":")[1]), tenant)
     if not svc or not svc["active"]:
         return await c.answer()
-    today = local_now(tenant).date()
-    b = InlineKeyboardBuilder()
-    for i in range(7):
-        d = today + dt.timedelta(days=i)
-        if is_dayoff(tenant, d):
-            continue
-        b.button(text=d.strftime("%d.%m %a"), callback_data=f"bkd:{svc['id']}:{d.isoformat()}")
-    await c.message.edit_text(f"{svc['name']}\n{t(uid, 'bk_pick_date')}", reply_markup=b.adjust(2).as_markup())
+    await c.message.edit_text(f"{svc['name']}\n{t(uid, 'bk_pick_date')}", reply_markup=date_markup(tenant, svc["id"]))
     await c.answer()
 
 
@@ -197,6 +220,7 @@ async def my_bookings(m: Message):
         return await m.answer(t(uid, "bk_mine_empty"))
     for bid, name, start, status in rows:
         b = InlineKeyboardBuilder()
+        b.button(text=t(uid, "bk_resched"), callback_data=f"bkre:{bid}")
         b.button(text=t(uid, "bk_cancel"), callback_data=f"bkx:{bid}")
         await m.answer(f"№{bid} · {name} · {start} · {t(uid, 'bk_status_' + status)}", reply_markup=b.as_markup())
 
@@ -446,3 +470,97 @@ def daily_lines(tenant, today):
 
 core.register_daily("booking", daily_lines)
 core.register_stale("bookings", ("pending",), 15, "Запись")
+
+
+@router.callback_query(F.data.startswith("bkre:"))
+async def reschedule(c: CallbackQuery):
+    uid, tenant = c.from_user.id, tenant_of(c.from_user.id)
+    bid = int(c.data.split(":")[1])
+    row = db.execute("SELECT b.status, b.service_id, s.name, b.start FROM bookings b JOIN services s ON s.id=b.service_id WHERE b.id=? AND b.tenant=? AND b.user_id=?",
+                     (bid, tenant, uid)).fetchone()
+    if not row or row[0] not in BUSY:
+        return await c.answer()
+    db.execute("UPDATE bookings SET status='cancelled' WHERE id=?", (bid,))
+    db.commit()
+    await notify_admins(c.bot, tenant, f"🔄 Клиент переносит запись №{bid} ({row[2]}, {row[3]}), ждите новую заявку")
+    await c.message.edit_text(t(uid, "bk_resched_info", svc=row[2]), reply_markup=date_markup(tenant, row[1]))
+    await c.answer()
+
+
+# ---------------- запись клиента администратором ----------------
+async def manual_done(bot, uid, ans, ctx):
+    tenant = ctx["tenant"]
+    svc = service_of(ans["service"], tenant)
+    if not svc or ans["time"] not in free_slots(tenant, svc, dt.date.fromisoformat(ans["day"])):
+        return await bot.send_message(uid, "⚠️ Это время занято или закрыто. Выберите другое: «➕ Записать клиента» ещё раз.", reply_markup=main_kb(uid))
+    cur = db.execute("INSERT INTO bookings(tenant,user_id,service_id,start,name,phone,status) VALUES(?,?,?,?,?,?, 'confirmed')",
+                     (tenant, 0, svc["id"], f"{ans['day']} {ans['time']}", ans["name"], ans["phone"]))
+    db.commit()
+    await bot.send_message(uid, f"✅ Запись №{cur.lastrowid} создана: {svc['name']}, {ans['day']} {ans['time']}, {ans['name']}", reply_markup=main_kb(uid))
+
+
+core.register_wizard("booking_manual", [
+    {"key": "service", "prompt": "Какая услуга?", "type": "choice",
+     "choices": lambda uid, a, c: [(f"{r[1]} · {r[2]} мин", r[0]) for r in db.execute("SELECT id, name, minutes FROM services WHERE tenant=? AND active=1 ORDER BY id", (tenant_of(uid),))]},
+    {"key": "day", "prompt": "Дата? Например 25.12 или 2026-12-25", "type": "date"},
+    {"key": "time", "prompt": "Время начала? Например 14:30", "type": "time"},
+    {"key": "name", "prompt": "Имя клиента?", "type": "text"},
+    {"key": "phone", "prompt": "Телефон клиента (цифрами)?", "type": "text"},
+], manual_done)
+
+
+@router.message(F.text == ADM_MANUAL)
+async def manual_start(m: Message, state: FSMContext):
+    tenant = tenant_of(m.from_user.id)
+    if not (tenant and is_admin(m.from_user.id)):
+        return
+    if not db.execute("SELECT 1 FROM services WHERE tenant=? AND active=1", (tenant,)).fetchone():
+        return await m.answer("Сначала добавьте услугу кнопкой «➕ Услуга».")
+    await core.start_wizard(m, state, "booking_manual", m.from_user.id, {"tenant": tenant})
+
+
+# ---------------- напоминание за сутки и автозавершение ----------------
+async def send_day_before_reminders(bot, now_utc=None):
+    sent = 0
+    for bid, tenant, uid, start, name in db.execute("SELECT b.id, b.tenant, b.user_id, b.start, s.name FROM bookings b JOIN services s ON s.id=b.service_id "
+                                                    "WHERE b.status='confirmed' AND b.reminded24=0 AND b.user_id!=0").fetchall():
+        local = (now_utc or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)) + dt.timedelta(hours=int(get_setting(tenant, "tz_offset", 5) or 5))
+        left = dt.datetime.strptime(start, "%Y-%m-%d %H:%M") - local
+        if dt.timedelta(hours=23) <= left <= dt.timedelta(hours=24):
+            db.execute("UPDATE bookings SET reminded24=1 WHERE id=?", (bid,))
+            db.commit()
+            try:
+                await bot.send_message(uid, t(uid, "bk_reminder24", time=start[11:16], svc=name))
+                sent += 1
+            except Exception:
+                logging.warning("day-before reminder not delivered")
+    return sent
+
+
+async def autocomplete_bookings(bot, now_utc=None):
+    done = 0
+    for bid, tenant, uid, start, minutes in db.execute("SELECT b.id, b.tenant, b.user_id, b.start, s.minutes FROM bookings b JOIN services s ON s.id=b.service_id WHERE b.status='confirmed'").fetchall():
+        local = (now_utc or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)) + dt.timedelta(hours=int(get_setting(tenant, "tz_offset", 5) or 5))
+        if dt.datetime.strptime(start, "%Y-%m-%d %H:%M") + dt.timedelta(minutes=minutes + 60) < local:
+            db.execute("UPDATE bookings SET status='done' WHERE id=?", (bid,))
+            db.commit()
+            done += 1
+            if uid:
+                await core.ask_rating(bot, uid, "booking", bid)
+    return done
+
+
+async def booking_periodic(bot):
+    await send_day_before_reminders(bot)
+    await autocomplete_bookings(bot)
+
+
+core.register_periodic(booking_periodic)
+
+
+def weekly_lines(tenant, today):
+    n = db.execute("SELECT COUNT(*) FROM bookings WHERE tenant=? AND status IN ('confirmed','done') AND date(created)>=date('now','-6 days')", (tenant,)).fetchone()[0]
+    return [f"💇 Новых записей за неделю: {n}"]
+
+
+core.register_weekly("booking", weekly_lines)
