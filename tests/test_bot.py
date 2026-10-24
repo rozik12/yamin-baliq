@@ -50,6 +50,8 @@ def msg(text=None, uid=5, **kw):
     m.bot.send_document = AsyncMock()
     m.bot.send_invoice = AsyncMock()
     m.bot.send_location = AsyncMock()
+    m.bot.forward_message = AsyncMock()
+    m.message_id = 777
     m.answer_location = AsyncMock()
     return m
 
@@ -222,13 +224,18 @@ class BotTests(unittest.TestCase):
         st.d.update(kind="delivery", phone="+998")
         m = msg("+998901112233")
         run(bot.got_contact(m, st))
-        self.assertEqual(m.bot.send_location.call_args[0], (111, 41.221122, 69.224447))
+        self.assertEqual(m.bot.forward_message.call_args[0], (111, 5, 777))  # исходное сообщение клиента переслано
+        m.bot.send_location.assert_not_awaited()
         # остальные способы: точка уходит при оформлении
         bot.INFO["payment_methods"] = ["pay_cash"]
         bot.carts[5] = {"sazan": 1}
         c = cb("pay:pay_cash")
         run(bot.order_pay(c, St({"kind": "delivery", "address": "x", "phone": "1", "lat": 41.3, "lon": 69.2})))
-        self.assertEqual(c.bot.send_location.call_args[0], (111, 41.3, 69.2))
+        self.assertEqual(c.bot.send_location.call_args[0], (111, 41.3, 69.2))  # нет исходного сообщения -> новая точка
+        # если пересылка не удалась, отправляем точку по координатам
+        b = MagicMock(send_message=AsyncMock(), forward_message=AsyncMock(side_effect=Exception("x")), send_location=AsyncMock())
+        run(bot.send_client_location(b, 41.3, 69.2, 9, [5, 1]))
+        b.send_location.assert_awaited()
         # карточка заказа в панели тоже показывает точку
         panel = msg(uid=111)
         run(bot.show_order(panel, 2))

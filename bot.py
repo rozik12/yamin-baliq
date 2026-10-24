@@ -546,7 +546,7 @@ async def order_kind(c: CallbackQuery, state: FSMContext):
 async def order_location(m: Message, state: FSMContext):
     loc = m.location
     await state.update_data(address=f"📍 {map_link(loc.latitude, loc.longitude)}",
-                            lat=loc.latitude, lon=loc.longitude)
+                            lat=loc.latitude, lon=loc.longitude, loc_msg=[m.chat.id, m.message_id])
     await ask_comment(m, m.from_user.id, state)
 
 
@@ -585,13 +585,20 @@ def map_link(lat, lon):
     return f"https://yandex.com/maps/?pt={lon},{lat}&z=17&l=map"
 
 
-async def send_client_location(bot, lat, lon, oid):
-    """Пересылает админам геолокацию клиента точкой на карте."""
+async def send_client_location(bot, lat, lon, oid, src=None):
+    """Пересылает админам геолокацию клиента: исходное сообщение с точкой (src=[chat_id, message_id]),
+    а если пересылка не удалась — новую точку по координатам."""
     if lat is None or lon is None:
         return
     for a in all_admins():
         try:
             await bot.send_message(a, f"📍 Локация клиента (заказ №{oid}):\n{map_link(lat, lon)}")
+            if src:
+                try:
+                    await bot.forward_message(a, src[0], src[1])
+                    continue
+                except Exception:
+                    logging.warning("forward of location failed, sending a new point")
             await bot.send_location(a, float(lat), float(lon))
         except Exception:
             logging.exception("location send failed")
@@ -634,7 +641,7 @@ async def begin_transfer(target, user, state):
     b.button(text="❌ Отменить заказ", callback_data=f"ord:{oid}:no")
     await notify_admins(target.bot, f"🛒 Заказ №{oid} сформирован, ждём оплату переводом ({AWAIT_MINUTES} мин)\n\n{full}",
                         reply_markup=b.as_markup())
-    await send_client_location(target.bot, d.get("lat"), d.get("lon"), oid)
+    await send_client_location(target.bot, d.get("lat"), d.get("lon"), oid, d.get("loc_msg"))
     await state.set_state(Order.proof)
     holder = f"\n👤 {card['holder']}" if card.get("holder") else ""
     await target.answer(t(uid, "transfer_info", sum=money(total, lang_of(uid)), card=card["number"], holder=holder))
@@ -762,7 +769,7 @@ async def finalize(bot, user, state, method_key, paid, edit=None, proof=None):
         await bot.send_message(uid, msg, reply_markup=main_kb(uid))
     delivery = d.get("kind") == "delivery"
     if not existing and delivery:
-        await send_client_location(bot, d.get("lat"), d.get("lon"), oid)
+        await send_client_location(bot, d.get("lat"), d.get("lon"), oid, d.get("loc_msg"))
     if transfer:
         b = InlineKeyboardBuilder()
         b.button(text="✅ Оплата пришла", callback_data=f"ord:{oid}:paid")
