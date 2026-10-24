@@ -172,6 +172,7 @@ router = Router()
 
 
 SETUP_CODE = os.environ.get("ADMIN_SETUP_CODE", "")
+ADMIN_BTN = "📋 Заказы (админ)"
 
 
 def all_admins():
@@ -231,6 +232,8 @@ def main_kb(uid):
     b = ReplyKeyboardBuilder()
     for k in ("b_menu", "b_cart", "b_hist", "b_book", "b_info", "b_lang"):
         b.button(text=t(uid, k))
+    if is_admin(uid):
+        b.button(text=ADMIN_BTN)
     return b.adjust(2).as_markup(resize_keyboard=True)
 
 
@@ -1005,11 +1008,29 @@ async def list_admins(m: Message):
 
 
 @router.message(Command("orders"))
+@router.message(F.text == ADMIN_BTN)
 async def active_orders(m: Message):
     if not is_admin(m.from_user.id):
         return
-    rows = db.execute("SELECT id, total, status FROM orders WHERE status IN ('new','verify','accepted','cooking','delivering','dispatched') ORDER BY id").fetchall()
-    await m.answer("\n".join(f"№{i} · {money(tt, 'ru')} · {st}" for i, tt, st in rows) or "Активных заказов нет")
+    rows = db.execute("SELECT id, total, status, text FROM orders WHERE status IN "
+                      "('new','verify','accepted','cooking','delivering','dispatched') ORDER BY id").fetchall()
+    if not rows:
+        return await m.answer("Активных заказов нет. Новые заказы придут сюда сообщением с кнопками.")
+    for oid, total, status, text in rows:
+        delivery = "\n🚚 " in text
+        b = InlineKeyboardBuilder()
+        if status == "new":
+            b.button(text="✅ Принять", callback_data=f"ord:{oid}:ok")
+            b.button(text="❌ Отклонить", callback_data=f"ord:{oid}:no")
+        elif status == "verify":
+            b.button(text="✅ Оплата пришла", callback_data=f"ord:{oid}:paid")
+            b.button(text="❌ Оплаты нет", callback_data=f"ord:{oid}:nopay")
+        elif status in ("accepted", "cooking"):
+            for nxt in next_steps("cook" if status == "cooking" else "ok", delivery):
+                b.button(text=STEP_BTN[nxt], callback_data=f"ord:{oid}:{nxt}")
+        elif status in ("delivering", "dispatched"):
+            b.button(text="✅ Выдан", callback_data=f"ord:{oid}:done")
+        await m.answer(f"📋 Заказ №{oid} · статус: {status}\n\n{text}", reply_markup=b.adjust(1).as_markup())
 
 
 @router.message(Command("export"))
@@ -1104,6 +1125,11 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     poller = asyncio.create_task(yandex_poller(bot))
+    for a in all_admins():
+        try:
+            await bot.send_message(a, "🔄 Бот запущен. Кнопка «📋 Заказы (админ)» показывает активные заказы.", reply_markup=main_kb(a))
+        except Exception:
+            logging.warning("admin %s has not started the bot yet", a)
     await dp.start_polling(bot)
 
 
