@@ -42,6 +42,11 @@ def is_worker(uid):
     return not is_admin(uid) and store.is_worker(uid)
 
 
+def can_record(uid):
+    """Вносить записи могут работники и админы (админы — только «Произведено»)."""
+    return is_admin(uid) or store.is_worker(uid)
+
+
 def lang(uid):
     if uid not in _lang:
         _lang[uid] = store.get_lang(uid) or "ru"
@@ -60,7 +65,7 @@ def pn(uid, p):
 def menu(uid):
     k = lambda key: KeyboardButton(text=tr(uid, key))
     if is_admin(uid):
-        rows = [[k("b_today"), k("b_week"), k("b_month")], [k("b_stock"), k("b_workers")],
+        rows = [[k("b_made"), k("b_undo")], [k("b_today"), k("b_week"), k("b_month")], [k("b_stock"), k("b_workers")],
                 [k("b_products"), k("b_invite")], [k("b_export"), k("b_lang")]]
     else:
         rows = [[k("b_sale"), k("b_made")], [k("b_mine"), k("b_undo")], [k("b_lang")]]
@@ -203,10 +208,8 @@ async def sale(m: Message, state: FSMContext):
 
 @router.message(F.text.in_(variants("b_made")))
 async def made(m: Message, state: FSMContext):
-    if is_worker(m.from_user.id):
+    if can_record(m.from_user.id):
         await open_cart(m, state, "made")
-    elif is_admin(m.from_user.id):
-        await m.answer(tr(m.from_user.id, "admin_no_work"), reply_markup=menu(m.from_user.id))
 
 
 async def refresh_cart(c: CallbackQuery, state: FSMContext, kind, cart, hist):
@@ -220,7 +223,7 @@ async def refresh_cart(c: CallbackQuery, state: FSMContext, kind, cart, hist):
 @router.callback_query(F.data.startswith("c:"))
 async def cart_tap(c: CallbackQuery, state: FSMContext):
     uid = c.from_user.id
-    if not is_worker(uid):
+    if not can_record(uid):
         return await c.answer()
     d = await state.get_data()
     if "cart" not in d:
@@ -237,7 +240,7 @@ async def cart_tap(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "cu")
 async def cart_undo(c: CallbackQuery, state: FSMContext):
     uid = c.from_user.id
-    if not is_worker(uid):
+    if not can_record(uid):
         return await c.answer()
     d = await state.get_data()
     cart, hist = d.get("cart"), d.get("hist", [])
@@ -255,12 +258,14 @@ async def cart_undo(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "cdone")
 async def cart_done(c: CallbackQuery, state: FSMContext):
     uid = c.from_user.id
-    if not is_worker(uid):
+    if not can_record(uid):
         return await c.answer()
     d = await state.get_data()
     cart = d.get("cart") or {}
     if not cart:
         return await c.answer(tr(uid, "pick_first"), show_alert=True)
+    if d["kind"] == "sale" and not is_worker(uid):
+        return await c.answer()
     await state.clear()
     lines, total = [], 0
     for pid, qty in cart.items():
@@ -284,7 +289,7 @@ async def cart_cancel(c: CallbackQuery, state: FSMContext):
 @router.message(F.text.in_(variants("b_undo")))
 async def undo(m: Message):
     uid = m.from_user.id
-    if not is_worker(uid):
+    if not can_record(uid):
         return
     r = store.undo_last(uid)
     if r:

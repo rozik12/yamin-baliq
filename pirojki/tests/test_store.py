@@ -157,5 +157,16 @@ class Note(unittest.TestCase):
         self.assertIn("Розикбека", bot.TODAY_NOTE[6984514139])
 
 
+class AdminMade(unittest.TestCase):
+    def test_admin_menu_has_made_not_sale(self):
+        import bot
+        kb = [b.text for r in bot.menu(1755207256).keyboard for b in r]
+        self.assertIn(bot.T["b_made"]["ru"], kb)
+        self.assertNotIn(bot.T["b_sale"]["ru"], kb)
+        self.assertTrue(bot.can_record(1755207256))
+        self.assertFalse(bot.can_record(999999))
+        self.assertFalse(bot.is_worker(1755207256))
+
+
 if __name__ == "__main__":
     unittest.main()
