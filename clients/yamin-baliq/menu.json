@@ -25,7 +25,10 @@
    },
    "taxi_class": "express",
    "weight_kg": 3
-  }
+  },
+  "payment_methods": [
+   "pay_transfer"
+  ]
  },
  "categories": [
   {

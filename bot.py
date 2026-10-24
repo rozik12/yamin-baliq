@@ -497,14 +497,31 @@ async def got_contact(m: Message, state: FSMContext):
     uid = m.from_user.id
     await state.update_data(phone=phone_of(m))
     await state.set_state(Order.pay)
+    methods = pay_methods()
+    if methods == ["pay_transfer"]:
+        return await begin_transfer(m, m.from_user, state)
     b = InlineKeyboardBuilder()
-    b.button(text=t(uid, "pay_cash"), callback_data="pay:pay_cash")
-    b.button(text=t(uid, "pay_card"), callback_data="pay:pay_card")
-    if INFO.get("card"):
-        b.button(text=t(uid, "pay_transfer"), callback_data="pay:pay_transfer")
-    if PAY_TOKEN:
-        b.button(text=t(uid, "pay_online"), callback_data="pay:pay_online")
+    for key in methods:
+        b.button(text=t(uid, key), callback_data=f"pay:{key}")
     await m.answer(t(uid, "pay_ask"), reply_markup=b.adjust(1).as_markup())
+
+
+def pay_methods():
+    """Способы оплаты клиента: menu.json → restaurant.payment_methods (по умолчанию все доступные)."""
+    wanted = INFO.get("payment_methods") or ["pay_cash", "pay_card", "pay_transfer", "pay_online"]
+    ok = [k for k in wanted if (k != "pay_transfer" or INFO.get("card")) and (k != "pay_online" or PAY_TOKEN)]
+    return ok or ["pay_cash"]
+
+
+async def begin_transfer(target, user, state):
+    """Показывает сумму и карту, ждёт скриншот чека."""
+    uid = user.id
+    card = INFO["card"]
+    d = await state.get_data()
+    _, total = build_order(uid, user, d, "pay_transfer", False)
+    await state.set_state(Order.proof)
+    holder = f"\n👤 {card['holder']}" if card.get("holder") else ""
+    await target.answer(t(uid, "transfer_info", sum=money(total, lang_of(uid)), card=card["number"], holder=holder))
 
 
 def build_order(uid, user, d, method_key, paid):
@@ -660,6 +677,8 @@ async def order_pay(c: CallbackQuery, state: FSMContext):
     if not carts.get(uid):
         await state.clear()
         return await c.answer(t(uid, "cart_gone"), show_alert=True)
+    if method not in pay_methods():
+        return await c.answer()
     if method == "pay_online":
         if not PAY_TOKEN:
             return await c.answer()
@@ -670,13 +689,7 @@ async def order_pay(c: CallbackQuery, state: FSMContext):
                                  prices=[LabeledPrice(label=t(uid, "order_w"), amount=total * 100)])
         return await c.answer()
     if method == "pay_transfer":
-        card = INFO.get("card")
-        if not card:
-            return await c.answer()
-        d = await state.get_data()
-        _, total = build_order(uid, c.from_user, d, method, False)
-        await state.set_state(Order.proof)
-        await c.message.answer(t(uid, "transfer_info", sum=money(total, lang_of(uid)), card=card["number"], holder=(f"\n👤 {card['holder']}" if card.get("holder") else "")))
+        await begin_transfer(c.message, c.from_user, state)
         return await c.answer()
     await finalize(c.bot, c.from_user, state, method, False, edit=c.message)
     await c.answer()

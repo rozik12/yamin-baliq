@@ -82,6 +82,7 @@ class BotTests(unittest.TestCase):
         bot.db.commit()
         bot.carts.clear()
         bot.promos_applied.clear()
+        bot.INFO["payment_methods"] = ["pay_cash", "pay_card", "pay_transfer", "pay_online"]
 
     def order_row(self, oid=1):
         return bot.db.execute("SELECT status, total, yandex_id FROM orders WHERE id=?", (oid,)).fetchone()
@@ -202,6 +203,19 @@ class BotTests(unittest.TestCase):
         run(bot.got_contact(m, St()))
         buttons = [b.callback_data for r in m.answer.call_args[1]["reply_markup"].inline_keyboard for b in r]
         self.assertIn("pay:pay_transfer", buttons)
+
+    def test_only_card_transfer_skips_payment_choice(self):
+        bot.INFO["payment_methods"] = ["pay_transfer"]
+        bot.carts[5] = {"sazan": 1}
+        st = St({"kind": "delivery", "address": "A"})
+        m = msg("+998901112233")
+        run(bot.got_contact(m, st))
+        text = m.answer.call_args[0][0]
+        self.assertIn("8600 1111 2222 3333", text)
+        self.assertEqual(st.d["phone"], "+998901112233")
+        c = cb("pay:pay_cash")
+        run(bot.order_pay(c, st))
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM orders").fetchone()[0], 0)
 
     def test_transfer_payment_full_flow(self):
         bot.carts[5] = {"sazan": 1}
