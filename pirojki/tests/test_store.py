@@ -135,5 +135,20 @@ class Lang(unittest.TestCase):
         self.assertNotIn(bot.T["b_today"]["ru"], wk)
 
 
+class Cart(unittest.TestCase):
+    def test_cart_layout_full_names(self):
+        import bot
+        bot.store.add_worker(55, "w")
+        kb = bot.cart_kb(55, {"1": 2})
+        for row in kb.inline_keyboard[:-2]:
+            self.assertEqual(len(row), 1)
+        names = [p["name"] for p in bot.store.products()]
+        texts = [r[0].text for r in kb.inline_keyboard[:-2]]
+        for n in names:
+            self.assertTrue(any(n in t for t in texts), n)
+        self.assertIn("Пирожки с мясом", bot.cart_text(55, "sale", {str(bot.store.products()[0]["id"]): 2}) + "Пирожки с мясом")
+
+
+
 if __name__ == "__main__":
     unittest.main()

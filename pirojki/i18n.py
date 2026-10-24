@@ -26,9 +26,10 @@ T = {
     "new_worker": {"ru": "👤 Новый работник: {name} ({id})", "uz": "👤 Yangi xodim: {name} ({id})", "en": "👤 New worker: {name} ({id})"},
     "admin_no_work": {"ru": "Администратор не ведёт продажи — это делают работники.", "uz": "Administrator sotuv yozmaydi — buni xodimlar qiladi.", "en": "Administrators don't record sales — workers do."},
     # корзина
-    "cart_sale": {"ru": "💰 Что продано? Нажимайте ➕ у каждого товара, потом «Записать».", "uz": "💰 Nima sotildi? Har bir mahsulotda ➕ bosing, so'ng «Yozish».", "en": "💰 What was sold? Tap ➕ on each item, then «Save»."},
-    "cart_made": {"ru": "🥟 Что произведено? Нажимайте ➕ у каждого товара, потом «Записать».", "uz": "🥟 Nima tayyorlandi? Har bir mahsulotda ➕ bosing, so'ng «Yozish».", "en": "🥟 What was produced? Tap ➕ on each item, then «Save»."},
+    "cart_sale": {"ru": "💰 Что продано? Нажимайте на товар — каждое нажатие +1, потом «Записать».", "uz": "💰 Nima sotildi? Mahsulotga bosing — har bir bosish +1, so'ng «Yozish».", "en": "💰 What was sold? Tap an item — each tap adds 1, then «Save»."},
+    "cart_made": {"ru": "🥟 Что произведено? Нажимайте на товар — каждое нажатие +1, потом «Записать».", "uz": "🥟 Nima tayyorlandi? Mahsulotga bosing — har bir bosish +1, so'ng «Yozish».", "en": "🥟 What was produced? Tap an item — each tap adds 1, then «Save»."},
     "save_btn": {"ru": "✅ Записать ({n} шт)", "uz": "✅ Yozish ({n} dona)", "en": "✅ Save ({n} pcs)"},
+    "cart_undo": {"ru": "↩️ Убрать последнее нажатие", "uz": "↩️ Oxirgi bosishni bekor qilish", "en": "↩️ Remove last tap"},
     "pick_first": {"ru": "Выберите товары ➕", "uz": "Mahsulotlarni tanlang ➕", "en": "Pick items ➕"},
     "cancel_btn": {"ru": "✖️ Отмена", "uz": "✖️ Bekor", "en": "✖️ Cancel"},
     "cancelled": {"ru": "Отменено.", "uz": "Bekor qilindi.", "en": "Cancelled."},

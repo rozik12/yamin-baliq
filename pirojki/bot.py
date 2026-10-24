@@ -160,17 +160,24 @@ async def set_lang(c: CallbackQuery, state: FSMContext):
 # ---------- продажа / произведено (только работники)
 
 def cart_kb(uid, cart):
+    """Одна широкая кнопка на товар: название видно целиком, нажатие = +1."""
     rows = []
     for p in store.products():
         n = cart.get(str(p["id"]), 0)
-        label = pn(uid, p)
-        rows.append([InlineKeyboardButton(text="➖", callback_data=f"c:{p['id']}:-"),
-                     InlineKeyboardButton(text=f"{label}: {n}" if n else label, callback_data="noop"),
-                     InlineKeyboardButton(text="➕", callback_data=f"c:{p['id']}:+")])
+        rows.append([InlineKeyboardButton(text=f"✅ {pn(uid, p)} × {n}" if n else f"➕ {pn(uid, p)}", callback_data=f"c:{p['id']}")])
     total = sum(cart.values())
+    rows.append([InlineKeyboardButton(text=tr(uid, "cart_undo"), callback_data="cu")])
     rows.append([InlineKeyboardButton(text=tr(uid, "save_btn", n=total) if total else tr(uid, "pick_first"), callback_data="cdone"),
                  InlineKeyboardButton(text=tr(uid, "cancel_btn"), callback_data="ccancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cart_text(uid, kind, cart):
+    head = tr(uid, "cart_sale" if kind == "sale" else "cart_made")
+    if not cart:
+        return head
+    lines = [f"• {pn(uid, store.product(int(pid)))} × {q}" for pid, q in cart.items()]
+    return head + "\n\n" + "\n".join(lines) + f"\n\n{sum(cart.values())} {T['pcs'][lang(uid)]}"
 
 
 async def open_cart(m: Message, state: FSMContext, kind):
@@ -178,8 +185,8 @@ async def open_cart(m: Message, state: FSMContext, kind):
     if not store.products():
         return await m.answer(tr(uid, "no_products"))
     await state.clear()
-    await state.update_data(kind=kind, cart={})
-    await m.answer(tr(uid, "cart_sale" if kind == "sale" else "cart_made"), reply_markup=cart_kb(uid, {}))
+    await state.update_data(kind=kind, cart={}, hist=[])
+    await m.answer(cart_text(uid, kind, {}), reply_markup=cart_kb(uid, {}))
 
 
 @router.message(F.text.in_(variants("b_sale")))
@@ -198,9 +205,12 @@ async def made(m: Message, state: FSMContext):
         await m.answer(tr(m.from_user.id, "admin_no_work"), reply_markup=menu(m.from_user.id))
 
 
-@router.callback_query(F.data == "noop")
-async def noop(c: CallbackQuery):
-    await c.answer()
+async def refresh_cart(c: CallbackQuery, state: FSMContext, kind, cart, hist):
+    await state.update_data(cart=cart, hist=hist)
+    try:
+        await c.message.edit_text(cart_text(c.from_user.id, kind, cart), reply_markup=cart_kb(c.from_user.id, cart))
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("c:"))
@@ -212,15 +222,29 @@ async def cart_tap(c: CallbackQuery, state: FSMContext):
     if "cart" not in d:
         await c.message.edit_text(tr(uid, "stale"))
         return await c.answer()
-    _, pid, op = c.data.split(":")
-    cart = d["cart"]
-    n = cart.get(pid, 0) + (1 if op == "+" else -1)
-    if n > 0:
-        cart[pid] = min(n, 1000)
+    pid = c.data[2:]
+    cart, hist = d["cart"], d.get("hist", [])
+    cart[pid] = min(cart.get(pid, 0) + 1, 1000)
+    hist.append(pid)
+    await refresh_cart(c, state, d["kind"], cart, hist[-200:])
+    await c.answer()
+
+
+@router.callback_query(F.data == "cu")
+async def cart_undo(c: CallbackQuery, state: FSMContext):
+    uid = c.from_user.id
+    if not is_worker(uid):
+        return await c.answer()
+    d = await state.get_data()
+    cart, hist = d.get("cart"), d.get("hist", [])
+    if cart is None or not hist:
+        return await c.answer()
+    pid = hist.pop()
+    if cart.get(pid, 0) > 1:
+        cart[pid] -= 1
     else:
         cart.pop(pid, None)
-    await state.update_data(cart=cart)
-    await c.message.edit_reply_markup(reply_markup=cart_kb(uid, cart))
+    await refresh_cart(c, state, d["kind"], cart, hist)
     await c.answer()
 
 
