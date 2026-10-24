@@ -592,7 +592,6 @@ async def send_client_location(bot, lat, lon, oid, src=None):
         return
     for a in all_admins():
         try:
-            await bot.send_message(a, f"📍 Локация клиента (заказ №{oid}):\n{map_link(lat, lon)}")
             if src:
                 try:
                     await bot.forward_message(a, src[0], src[1])

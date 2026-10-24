@@ -226,6 +226,8 @@ class BotTests(unittest.TestCase):
         run(bot.got_contact(m, st))
         self.assertEqual(m.bot.forward_message.call_args[0], (111, 5, 777))  # исходное сообщение клиента переслано
         m.bot.send_location.assert_not_awaited()
+        texts = [c[0][1] for c in m.bot.send_message.call_args_list]
+        self.assertFalse([x for x in texts if "Локация клиента" in x])  # отдельного сообщения со ссылкой нет
         # остальные способы: точка уходит при оформлении
         bot.INFO["payment_methods"] = ["pay_cash"]
         bot.carts[5] = {"sazan": 1}
