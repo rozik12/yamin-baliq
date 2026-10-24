@@ -1,0 +1,371 @@
+"""Тесты всех функций бота с подставными объектами Telegram (без сети)."""
+import asyncio
+import json
+import os
+import sys
+import unittest
+from unittest.mock import AsyncMock, MagicMock
+
+os.environ.update(BOT_TOKEN="1:x", DB_PATH=":memory:", ADMIN_CHAT_ID="111", COURIER_CHAT_ID="-100500",
+                  ADMIN_SETUP_CODE="CODE123", CARD_NUMBER="8600 1111 2222 3333", YANDEX_DELIVERY_TOKEN="")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import bot  # noqa: E402
+import yandex  # noqa: E402
+
+
+class St:
+    def __init__(self, d=None):
+        self.d = d or {}
+        self.state = None
+
+    async def get_data(self):
+        return dict(self.d)
+
+    async def update_data(self, **k):
+        self.d.update(k)
+
+    async def set_state(self, s):
+        self.state = s
+
+    async def clear(self):
+        self.d = {}
+        self.state = None
+
+
+def msg(text=None, uid=5, **kw):
+    m = MagicMock()
+    m.text = text
+    m.from_user.id = uid
+    m.from_user.full_name = f"U{uid}"
+    m.contact = kw.get("contact")
+    m.location = kw.get("location")
+    m.photo = kw.get("photo")
+    m.document = kw.get("document")
+    m.chat.id = uid
+    for n in ("answer", "answer_photo", "answer_document", "edit_text", "edit_caption", "edit_reply_markup", "delete"):
+        setattr(m, n, AsyncMock())
+    m.bot = MagicMock()
+    m.bot.send_message = AsyncMock()
+    m.bot.send_photo = AsyncMock()
+    m.bot.send_document = AsyncMock()
+    m.bot.send_invoice = AsyncMock()
+    return m
+
+
+def cb(data, uid=5, chat=None, photo=False):
+    c = MagicMock()
+    c.data = data
+    c.from_user.id = uid
+    c.from_user.full_name = f"U{uid}"
+    c.answer = AsyncMock()
+    c.message = msg("orig", uid)
+    c.message.chat.id = chat if chat is not None else uid
+    c.message.caption = "cap"
+    c.message.photo = [1] if photo else None
+    c.bot = c.message.bot
+    return c
+
+
+def run(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+class BotTests(unittest.TestCase):
+    def setUp(self):
+        for t in ("orders", "bookings", "reviews", "stoplist", "promos", "admins", "users"):
+            bot.db.execute(f"DELETE FROM {t}")
+        bot.db.execute("INSERT INTO users(id,lang) VALUES(5,'ru')")
+        bot.db.commit()
+        bot.carts.clear()
+        bot.promos_applied.clear()
+
+    def order_row(self, oid=1):
+        return bot.db.execute("SELECT status, total, yandex_id FROM orders WHERE id=?", (oid,)).fetchone()
+
+    # ---------- меню и данные
+    def test_menu_data_complete(self):
+        self.assertEqual(len(bot.ITEMS), 50)
+        for item in bot.ITEMS.values():
+            for lang in ("ru", "uz", "en"):
+                self.assertTrue(item["name"][lang], item["id"])
+            self.assertTrue(os.path.exists(os.path.join(bot.CDIR, "photos", item["id"] + ".jpg")), item["id"])
+        for cat in bot.CATS.values():
+            for lang in ("ru", "uz", "en"):
+                self.assertTrue(cat["name"][lang])
+
+    def test_texts_have_all_languages(self):
+        for key, v in bot.TXT.items():
+            self.assertEqual(set(v), {"ru", "uz", "en"}, key)
+
+    def test_money_format(self):
+        self.assertEqual(bot.money(125000, "ru"), "125 000 сум")
+        self.assertEqual(bot.money(125000, "uz"), "125 000 so'm")
+        self.assertEqual(bot.money(125000, "en"), "125 000 UZS")
+
+    # ---------- язык
+    def test_language_selection_and_start(self):
+        bot.db.execute("DELETE FROM users")
+        m = msg("/start")
+        run(bot.start(m, St()))
+        self.assertIn("Tilni", m.answer.call_args[0][0])
+        c = cb("lang:uz")
+        run(bot.set_lang(c))
+        self.assertEqual(bot.lang_of(5), "uz")
+        c.message.answer_photo.assert_awaited()
+
+    # ---------- меню / корзина
+    def test_show_category_with_photos_and_stoplist(self):
+        c = cb("cat:fish")
+        run(bot.show_cat(c))
+        self.assertEqual(c.message.answer_photo.await_count, 9)
+        bot.db.execute("INSERT INTO stoplist VALUES('sazan')")
+        c = cb("cat:fish")
+        run(bot.show_cat(c))
+        self.assertEqual(c.message.answer_photo.await_count, 8)
+
+    def test_old_buttons_do_not_crash(self):
+        c = cb("cat:pizza")
+        run(bot.show_cat(c))
+        c.message.answer.assert_awaited()
+        run(bot.add(cb("add:p1")))
+        run(bot.change_qty(cb("inc:p1")))
+        self.assertNotIn(5, bot.carts)
+
+    def test_cart_add_plus_minus_clear(self):
+        run(bot.add(cb("add:sazan")))
+        run(bot.change_qty(cb("inc:sazan")))
+        self.assertEqual(bot.carts[5]["sazan"], 2)
+        run(bot.change_qty(cb("dec:sazan")))
+        run(bot.change_qty(cb("dec:sazan")))
+        self.assertNotIn("sazan", bot.carts[5])
+        run(bot.add(cb("add:oliv")))
+        c = cb("clear")
+        run(bot.clear(c))
+        self.assertNotIn(5, bot.carts)
+
+    def test_promo_code(self):
+        bot.carts[5] = {"oliv": 1}
+        m = msg("/promo FISH10 10", uid=111)
+        run(bot.promo_admin(m, MagicMock(args="FISH10 10")))
+        run(bot.promo_apply(msg("fish10"), St()))
+        self.assertEqual(bot.cart_text(5)[1], 36000)
+        m = msg("bad")
+        run(bot.promo_apply(m, St()))
+        self.assertIn("нет", m.answer.call_args[0][0])
+
+    def test_min_order(self):
+        bot.carts[5] = {"luk": 1}
+        c = cb("checkout")
+        run(bot.checkout(c, St()))
+        self.assertTrue(c.answer.call_args[1].get("show_alert"))
+
+    # ---------- оформление заказа
+    def make_order(self, method="pay_cash", kind="delivery", **extra):
+        bot.carts[5] = {"sazan": 1}
+        st = St({"kind": kind, "address": "ул. Тест", "phone": "+998901112233", **extra})
+        c = cb(f"pay:{method}")
+        run(bot.order_pay(c, st))
+        return st, c
+
+    def test_order_cash_delivery_notifies_admin(self):
+        _, c = self.make_order("pay_cash", comment="без лука", lat=41.3, lon=69.2)
+        status, total, _ = self.order_row()
+        self.assertEqual((status, total), ("new", 160000))
+        sent = [x[0][0] for x in c.bot.send_message.call_args_list]
+        self.assertIn(111, sent)
+        dest = json.loads(bot.db.execute("SELECT dest FROM orders").fetchone()[0])
+        self.assertEqual(dest["lat"], 41.3)
+
+    def test_free_delivery_over_threshold(self):
+        bot.carts[5] = {"sazan": 3}
+        run(bot.order_pay(cb("pay:pay_card"), St({"kind": "delivery", "address": "A", "phone": "1"})))
+        self.assertEqual(self.order_row()[1], 420000)
+
+    def test_pickup_no_fee(self):
+        self.make_order("pay_cash", kind="pickup")
+        self.assertEqual(self.order_row()[1], 140000)
+
+    def test_location_and_comment_steps(self):
+        st = St()
+        loc = MagicMock(latitude=41.3, longitude=69.2)
+        run(bot.order_location(msg(location=loc), st))
+        self.assertEqual(st.d["lat"], 41.3)
+        run(bot.got_comment(msg("без лука"), st))
+        self.assertEqual(st.d["comment"], "без лука")
+
+    def test_contact_step_offers_card_and_online_payment(self):
+        m = msg("+998901112233")
+        run(bot.got_contact(m, St()))
+        buttons = [b.callback_data for r in m.answer.call_args[1]["reply_markup"].inline_keyboard for b in r]
+        self.assertIn("pay:pay_transfer", buttons)
+
+    def test_transfer_payment_full_flow(self):
+        bot.carts[5] = {"sazan": 1}
+        st = St({"kind": "delivery", "address": "A", "phone": "+998"})
+        c = cb("pay:pay_transfer")
+        run(bot.order_pay(c, st))
+        self.assertIn("8600 1111 2222 3333", c.message.answer.call_args[0][0])
+        m = msg(photo=[MagicMock(file_id="FID")])
+        run(bot.got_proof_photo(m, st))
+        self.assertEqual(self.order_row()[0], "verify")
+        self.assertEqual(m.bot.send_photo.call_args[0][:2], (111, "FID"))
+        a = cb("ord:1:paid", uid=111, photo=True)
+        run(bot.admin_decision(a))
+        self.assertEqual(self.order_row()[0], "accepted")
+        a = cb("ord:1:nopay", uid=111, photo=True)
+        run(bot.admin_decision(a))
+        self.assertEqual(self.order_row()[0], "rejected")
+
+    def test_online_payment_invoice(self):
+        bot.PAY_TOKEN = "tok"
+        try:
+            bot.carts[5] = {"sazan": 1}
+            c = cb("pay:pay_online")
+            run(bot.order_pay(c, St({"kind": "pickup", "phone": "1"})))
+            kw = c.bot.send_invoice.call_args[1]
+            self.assertEqual((kw["currency"], kw["prices"][0].amount), ("UZS", 14000000))
+            m = msg()
+            bot.carts[5] = {"sazan": 1}
+            run(bot.got_payment(m, St({"kind": "pickup", "phone": "1"})))
+            self.assertIn("ОПЛАЧЕНО", bot.db.execute("SELECT text FROM orders").fetchone()[0])
+        finally:
+            bot.PAY_TOKEN = ""
+
+    # ---------- администратор и курьеры
+    def test_admin_status_flow_and_rating(self):
+        self.make_order("pay_cash", kind="pickup")
+        for step, expected in (("ok", "accepted"), ("cook", "cooking"), ("go", "delivering"), ("done", "done")):
+            run(bot.admin_decision(cb(f"ord:1:{step}", uid=111)))
+            self.assertEqual(self.order_row()[0], expected)
+        c = cb("rate:1:5")
+        run(bot.rate(c))
+        self.assertEqual(bot.db.execute("SELECT rating FROM reviews").fetchone()[0], 5)
+
+    def test_admin_access_denied_for_others(self):
+        self.make_order("pay_cash", kind="pickup")
+        c = cb("ord:1:ok", uid=999)
+        run(bot.admin_decision(c))
+        self.assertEqual(self.order_row()[0], "new")
+
+    def test_courier_group_flow(self):
+        self.make_order("pay_cash")
+        run(bot.admin_decision(cb("ord:1:ok", uid=111)))
+        run(bot.admin_decision(cb("ord:1:disp", uid=111)))
+        self.assertEqual(self.order_row()[0], "dispatched")
+        run(bot.courier_action(cb("crt:1:take", uid=777, chat=-100500)))
+        self.assertEqual(self.order_row()[0], "delivering")
+        c = cb("crt:1:take", uid=888, chat=-100500)
+        run(bot.courier_action(c))
+        self.assertTrue(c.answer.call_args[1].get("show_alert"))
+        c = cb("crt:1:done", uid=888, chat=-100500)
+        run(bot.courier_action(c))
+        self.assertEqual(self.order_row()[0], "delivering")
+        run(bot.courier_action(cb("crt:1:done", uid=777, chat=-100500)))
+        self.assertEqual(self.order_row()[0], "done")
+
+    def test_history_repeat_cancel(self):
+        self.make_order("pay_cash", kind="pickup")
+        m = msg()
+        run(bot.history(m))
+        self.assertGreaterEqual(m.answer.await_count, 2)
+        bot.carts.clear()
+        run(bot.repeat_order(cb("rep:1")))
+        self.assertEqual(bot.carts[5], {"sazan": 1})
+        run(bot.cancel_order(cb("cx:1")))
+        self.assertEqual(self.order_row()[0], "cancelled")
+        self.make_order("pay_cash", kind="pickup")
+        run(bot.admin_decision(cb("ord:2:ok", uid=111)))
+        c = cb("cx:2")
+        run(bot.cancel_order(c))
+        self.assertEqual(self.order_row(2)[0], "accepted")
+
+    def test_booking_flow(self):
+        st = St()
+        run(bot.book(msg(), st))
+        run(bot.book_when(msg("25.10 19:00"), st))
+        m = msg("abc")
+        run(bot.book_guests(m, st))
+        self.assertIn("число", m.answer.call_args[0][0])
+        run(bot.book_guests(msg("4"), st))
+        m = msg("+998901112233")
+        run(bot.book_done(m, st))
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM bookings").fetchone()[0], 1)
+        run(bot.admin_decision(cb("book:1:ok", uid=111)))
+        self.assertEqual(bot.db.execute("SELECT status FROM bookings").fetchone()[0], "accepted")
+
+    def test_admin_commands(self):
+        m = msg("/stats", uid=111)
+        self.make_order("pay_cash", kind="pickup")
+        run(bot.stats(m))
+        self.assertIn("Заказов: 1", m.answer.call_args[0][0])
+        m = msg(uid=111)
+        run(bot.active_orders(m))
+        self.assertIn("№1", m.answer.call_args[0][0])
+        m = msg(uid=111)
+        run(bot.export_orders(m))
+        m.answer_document.assert_awaited()
+        m = msg(uid=111)
+        run(bot.broadcast(m, MagicMock(args="Акция!")))
+        self.assertIn("Отправлено: 1", m.answer.call_args[0][0])
+        c = cb("sl:oliv", uid=111)
+        run(bot.toggle_stop(c))
+        self.assertEqual(bot.db.execute("SELECT COUNT(*) FROM stoplist").fetchone()[0], 1)
+        m = msg(uid=999)
+        run(bot.stats(m))
+        m.answer.assert_not_awaited()
+
+    def test_admin_management(self):
+        run(bot.claim_admin(msg(uid=222), MagicMock(args="WRONG")))
+        self.assertFalse(bot.is_admin(222))
+        run(bot.claim_admin(msg(uid=222), MagicMock(args="CODE123")))
+        self.assertTrue(bot.is_admin(222))
+        run(bot.add_admin(msg(uid=111), MagicMock(args="333")))
+        self.assertTrue(bot.is_admin(333))
+        run(bot.remove_admin(msg(uid=111), MagicMock(args="333")))
+        self.assertFalse(bot.is_admin(333))
+        run(bot.add_admin(msg(uid=999), MagicMock(args="444")))
+        self.assertFalse(bot.is_admin(444))
+
+    # ---------- Яндекс Доставка
+    def test_yandex_flow_with_fake_api(self):
+        bot.YCFG = {"pickup": {"fullname": "Т", "lat": 41.3, "lon": 69.2, "phone": "+998900000000"}}
+        old_token, old_call = yandex.TOKEN, yandex._call
+        yandex.TOKEN = "tok"
+        seen = {}
+
+        def fake(path, body=None, query=""):
+            if path == "claims/create":
+                seen["body"] = body
+                return {"id": "C1", "status": "new"}
+            return {"status": fake.st, "performer_info": {"courier_name": "Ali"}}
+        fake.st = "performer_found"
+        yandex._call = fake
+        try:
+            self.make_order("pay_cash", lat=41.31, lon=69.28)
+            run(bot.admin_decision(cb("ord:1:ok", uid=111)))
+            self.assertEqual(self.order_row()[2], "C1")
+            self.assertEqual(seen["body"]["route_points"][1]["address"]["coordinates"], [69.28, 41.31])
+            self.assertTrue(seen["body"]["auto_accept"])
+            for st, expected in (("performer_found", "delivering"), ("delivered", "done")):
+                fake.st = st
+                b = MagicMock(send_message=AsyncMock())
+
+                async def once():
+                    real = asyncio.sleep
+                    bot.asyncio.sleep = lambda x: real(0)
+                    t = asyncio.create_task(bot.yandex_poller(b))
+                    await real(0.05)
+                    t.cancel()
+                    bot.asyncio.sleep = real
+                run(once())
+                self.assertEqual(self.order_row()[0], expected)
+        finally:
+            yandex.TOKEN, yandex._call, bot.YCFG = old_token, old_call, bot.INFO.get("yandex")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

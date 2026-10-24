@@ -1,0 +1,6 @@
+.env
+bot.db
+bot.log
+photos.log
+__pycache__/
+*.zip

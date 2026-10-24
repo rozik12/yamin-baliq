@@ -1,0 +1,832 @@
+{
+ "restaurant": {
+  "name": "Yamin Baliq",
+  "address": {
+   "ru": "г. Ташкент, ул. Примерная, 1",
+   "uz": "Toshkent sh., Namuna ko'chasi, 1",
+   "en": "Tashkent, Namuna St., 1"
+  },
+  "phone": "+998 90 000 00 00",
+  "hours": {
+   "ru": "Ежедневно 11:00–23:00",
+   "uz": "Har kuni 11:00–23:00",
+   "en": "Daily 11:00–23:00"
+  },
+  "delivery_fee": 20000,
+  "free_delivery_from": 300000,
+  "min_order": 50000,
+  "yandex": {
+   "pickup": {
+    "fullname": "г. Ташкент, ул. Примерная, 1",
+    "lat": 41.311081,
+    "lon": 69.240562,
+    "phone": "+998900000000",
+    "contact_name": "Yamin Baliq"
+   },
+   "taxi_class": "express",
+   "weight_kg": 3
+  }
+ },
+ "categories": [
+  {
+   "id": "fish",
+   "name": {
+    "ru": "🐟 Рыба (цена за 1 кг)",
+    "uz": "🐟 Baliq (1 kg narxi)",
+    "en": "🐟 Fish (price per kg)"
+   },
+   "items": [
+    {
+     "id": "sazan",
+     "price": 140000,
+     "name": {
+      "ru": "Сазан",
+      "uz": "Sazan",
+      "en": "Carp"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "sazan"
+    },
+    {
+     "id": "tolst_sheya",
+     "price": 95000,
+     "name": {
+      "ru": "Толстолобик шейка",
+      "uz": "Tolstolobik bo'yin qismi",
+      "en": "Silver carp neck"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "tolst_sheya"
+    },
+    {
+     "id": "tolstolobik",
+     "price": 85000,
+     "name": {
+      "ru": "Толстолобик",
+      "uz": "Tolstolobik",
+      "en": "Silver carp"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "tolstolobik"
+    },
+    {
+     "id": "sazan_butun",
+     "price": 110000,
+     "name": {
+      "ru": "Сазан бутун",
+      "uz": "Butun sazan",
+      "en": "Whole carp"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "sazan_butun"
+    },
+    {
+     "id": "forel",
+     "price": 190000,
+     "name": {
+      "ru": "Форель на мангале",
+      "uz": "Mangalda forel",
+      "en": "Grilled trout"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "forel"
+    },
+    {
+     "id": "som",
+     "price": 120000,
+     "name": {
+      "ru": "Сом (Лакка)",
+      "uz": "Som (Laqqa)",
+      "en": "Catfish (Laqqa)"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "som"
+    },
+    {
+     "id": "vaguri",
+     "price": 280000,
+     "name": {
+      "ru": "Вагури из баранины",
+      "uz": "Qo'y go'shtidan vaguri",
+      "en": "Lamb vaguri"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "vaguri"
+    },
+    {
+     "id": "sudak",
+     "price": 200000,
+     "name": {
+      "ru": "Судак филе",
+      "uz": "Sudak file",
+      "en": "Pike-perch fillet"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "sudak"
+    },
+    {
+     "id": "vobla",
+     "price": 80000,
+     "name": {
+      "ru": "Рыба вобла",
+      "uz": "Vobla baliq",
+      "en": "Vobla (roach)"
+     },
+     "desc": {
+      "ru": "Цена за 1 кг",
+      "uz": "1 kg narxi",
+      "en": "Price per 1 kg"
+     },
+     "photo_key": "vobla"
+    }
+   ]
+  },
+  {
+   "id": "kebab",
+   "name": {
+    "ru": "🍢 Шашлыки",
+    "uz": "🍢 Shashliklar",
+    "en": "🍢 Kebabs"
+   },
+   "items": [
+    {
+     "id": "sh_wings",
+     "price": 20000,
+     "name": {
+      "ru": "Куриные крылышки",
+      "uz": "Tovuq qanotchalari",
+      "en": "Chicken wings"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "shashlik"
+    },
+    {
+     "id": "sh_lamb",
+     "price": 25000,
+     "name": {
+      "ru": "Кусковой шашлык из баранины",
+      "uz": "Qo'y go'shtidan bo'lakli shashlik",
+      "en": "Lamb chunk skewer"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "shashlik"
+    },
+    {
+     "id": "sh_beef",
+     "price": 25000,
+     "name": {
+      "ru": "Кусковой шашлык из говядины",
+      "uz": "Mol go'shtidan bo'lakli shashlik",
+      "en": "Beef chunk skewer"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "shashlik"
+    },
+    {
+     "id": "sh_mush",
+     "price": 18000,
+     "name": {
+      "ru": "Грибной шашлык",
+      "uz": "Qo'ziqorinli shashlik",
+      "en": "Mushroom skewer"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "shashlik"
+    },
+    {
+     "id": "sh_fillet",
+     "price": 20000,
+     "name": {
+      "ru": "Куриное филе",
+      "uz": "Tovuq file",
+      "en": "Chicken fillet skewer"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "shashlik"
+    },
+    {
+     "id": "sh_minced",
+     "price": 20000,
+     "name": {
+      "ru": "Молотый шашлык",
+      "uz": "Qiyma shashlik",
+      "en": "Minced meat skewer"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "shashlik"
+    },
+    {
+     "id": "sh_veg",
+     "price": 18000,
+     "name": {
+      "ru": "Овощной шашлык",
+      "uz": "Sabzavotli shashlik",
+      "en": "Vegetable skewer"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "shashlik"
+    },
+    {
+     "id": "sh_tomato",
+     "price": 15000,
+     "name": {
+      "ru": "Помидоры шашлык",
+      "uz": "Pomidorli shashlik",
+      "en": "Tomato skewer"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "shashlik"
+    }
+   ]
+  },
+  {
+   "id": "salad",
+   "name": {
+    "ru": "🥗 Салаты",
+    "uz": "🥗 Salatlar",
+    "en": "🥗 Salads"
+   },
+   "items": [
+    {
+     "id": "oliv",
+     "price": 40000,
+     "name": {
+      "ru": "Оливье",
+      "uz": "Olivye",
+      "en": "Olivier"
+     },
+     "desc": {
+      "ru": "Говядина, картошка, морковь, огурцы солёные, майонез",
+      "uz": "Mol go'shti, kartoshka, sabzi, tuzlangan bodring, mayonez",
+      "en": "Beef, potato, carrot, pickles, mayonnaise"
+     },
+     "photo_key": "oliv"
+    },
+    {
+     "id": "kapriz",
+     "price": 40000,
+     "name": {
+      "ru": "Мужской каприз",
+      "uz": "Erkaklar kaprizi",
+      "en": "Men's Caprice"
+     },
+     "desc": {
+      "ru": "Казы, копчёная колбаса, индейка, огурец, сыр, майонез",
+      "uz": "Qazi, dudlangan kolbasa, kurka, bodring, pishloq, mayonez",
+      "en": "Kazy, smoked sausage, turkey, cucumber, cheese, mayonnaise"
+     },
+     "photo_key": "kapriz"
+    },
+    {
+     "id": "yapon",
+     "price": 40000,
+     "name": {
+      "ru": "Японский",
+      "uz": "Yapon",
+      "en": "Japanese"
+     },
+     "desc": {
+      "ru": "Говядина, помидор, огурец, болгарский перец, острый соус",
+      "uz": "Mol go'shti, pomidor, bodring, bolgar qalampiri, achchiq sous",
+      "en": "Beef, tomato, cucumber, bell pepper, spicy sauce"
+     },
+     "photo_key": "yapon"
+    },
+    {
+     "id": "cezar",
+     "price": 40000,
+     "name": {
+      "ru": "Цезарь",
+      "uz": "Sezar",
+      "en": "Caesar"
+     },
+     "desc": {
+      "ru": "Айсберг, филе курицы, помидоры черри, сухари, сыр, соус",
+      "uz": "Aysberg, tovuq filesi, cherri pomidor, suxari, pishloq, sous",
+      "en": "Iceberg, chicken fillet, cherry tomatoes, croutons, cheese, dressing"
+     },
+     "photo_key": "cezar"
+    },
+    {
+     "id": "mega",
+     "price": 45000,
+     "name": {
+      "ru": "Мега",
+      "uz": "Mega",
+      "en": "Mega"
+     },
+     "desc": {
+      "ru": "Говядина, огурцы свежие, огурцы солёные",
+      "uz": "Mol go'shti, yangi bodring, tuzlangan bodring",
+      "en": "Beef, fresh cucumbers, pickles"
+     },
+     "photo_key": "mega"
+    },
+    {
+     "id": "smak",
+     "price": 40000,
+     "name": {
+      "ru": "Смак",
+      "uz": "Smak",
+      "en": "Smak"
+     },
+     "desc": {
+      "ru": "Сыр, помидоры, сухари, майонез",
+      "uz": "Pishloq, pomidor, suxari, mayonez",
+      "en": "Cheese, tomatoes, croutons, mayonnaise"
+     },
+     "photo_key": "smak"
+    },
+    {
+     "id": "baklazhan",
+     "price": 50000,
+     "name": {
+      "ru": "Салат с хрустящими баклажанами",
+      "uz": "Qarsildoq baqlajonli salat",
+      "en": "Crispy eggplant salad"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "baklazhan"
+    },
+    {
+     "id": "amerik",
+     "price": 40000,
+     "name": {
+      "ru": "Американский",
+      "uz": "Amerika",
+      "en": "American"
+     },
+     "desc": {
+      "ru": "Филе курицы, грибы, морковь, кукуруза, майонез",
+      "uz": "Tovuq filesi, qo'ziqorin, sabzi, makkajo'xori, mayonez",
+      "en": "Chicken fillet, mushrooms, carrot, corn, mayonnaise"
+     },
+     "photo_key": "amerik"
+    },
+    {
+     "id": "gribnoy",
+     "price": 40000,
+     "name": {
+      "ru": "Грибной",
+      "uz": "Qo'ziqorinli",
+      "en": "Mushroom"
+     },
+     "desc": {
+      "ru": "Филе курицы, грибы, помидоры",
+      "uz": "Tovuq filesi, qo'ziqorin, pomidor",
+      "en": "Chicken fillet, mushrooms, tomatoes"
+     },
+     "photo_key": "gribnoy"
+    },
+    {
+     "id": "grech",
+     "price": 40000,
+     "name": {
+      "ru": "Греческий",
+      "uz": "Yunon",
+      "en": "Greek"
+     },
+     "desc": {
+      "ru": "Помидоры черри, салатный лист, огурцы, оливки, фетакса, лимонный сок",
+      "uz": "Cherri pomidor, salat bargi, bodring, zaytun, fetaksa, limon sharbati",
+      "en": "Cherry tomatoes, lettuce, cucumbers, olives, fetaxa, lemon juice"
+     },
+     "photo_key": "grech"
+    },
+    {
+     "id": "rukkola",
+     "price": 50000,
+     "name": {
+      "ru": "Руккола",
+      "uz": "Rukkola",
+      "en": "Arugula"
+     },
+     "desc": {
+      "ru": "Руккола, помидор черри, сыр пармезан, кедровый орех",
+      "uz": "Rukkola, cherri pomidor, parmezan pishlog'i, sidr yong'og'i",
+      "en": "Arugula, cherry tomato, parmesan, pine nuts"
+     },
+     "photo_key": "rukkola"
+    },
+    {
+     "id": "chirokchi",
+     "price": 25000,
+     "name": {
+      "ru": "Чирокчи",
+      "uz": "Chiroqchi",
+      "en": "Chiroqchi"
+     },
+     "desc": {
+      "ru": "Помидор, огурец, лук, сузьма",
+      "uz": "Pomidor, bodring, piyoz, suzma",
+      "en": "Tomato, cucumber, onion, suzma"
+     },
+     "photo_key": "chirokchi"
+    },
+    {
+     "id": "franc",
+     "price": 40000,
+     "name": {
+      "ru": "Французский",
+      "uz": "Fransuz",
+      "en": "French"
+     },
+     "desc": {
+      "ru": "Морковь, свекла, картошка пай, айсберг, огурец, говядина, майонез",
+      "uz": "Sabzi, lavlagi, kartoshka pay, aysberg, bodring, mol go'shti, mayonez",
+      "en": "Carrot, beetroot, potato straws, iceberg, cucumber, beef, mayonnaise"
+     },
+     "photo_key": "franc"
+    },
+    {
+     "id": "gnezdo",
+     "price": 40000,
+     "name": {
+      "ru": "Гнездо",
+      "uz": "Uya",
+      "en": "Nest"
+     },
+     "desc": {
+      "ru": "Индейка, колбаса, говядина, картошка пай, яйцо, перепелиное яйцо, майонез",
+      "uz": "Kurka, kolbasa, mol go'shti, kartoshka pay, tuxum, bedana tuxumi, mayonez",
+      "en": "Turkey, sausage, beef, potato straws, egg, quail egg, mayonnaise"
+     },
+     "photo_key": "gnezdo"
+    },
+    {
+     "id": "vinegret",
+     "price": 30000,
+     "name": {
+      "ru": "Винегрет",
+      "uz": "Vinegret",
+      "en": "Vinaigrette"
+     },
+     "desc": {
+      "ru": "Свёкла, картофель, лук репчатый, капуста квашеная, горошек зелёный",
+      "uz": "Lavlagi, kartoshka, piyoz, tuzlangan karam, yashil no'xat",
+      "en": "Beetroot, potato, onion, sauerkraut, green peas"
+     },
+     "photo_key": "vinegret"
+    },
+    {
+     "id": "marin",
+     "price": 25000,
+     "name": {
+      "ru": "Маринованное ассорти",
+      "uz": "Marinadlangan assorti",
+      "en": "Pickled assortment"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "marin"
+    },
+    {
+     "id": "svezhiy",
+     "price": 25000,
+     "name": {
+      "ru": "Свежий",
+      "uz": "Yangi salat",
+      "en": "Fresh salad"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "svezhiy"
+    },
+    {
+     "id": "suzma",
+     "price": 15000,
+     "name": {
+      "ru": "Сузма",
+      "uz": "Suzma",
+      "en": "Suzma"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "suzma"
+    },
+    {
+     "id": "luk",
+     "price": 7000,
+     "name": {
+      "ru": "Лук",
+      "uz": "Piyoz",
+      "en": "Onion"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "luk"
+    },
+    {
+     "id": "chesnok",
+     "price": 7000,
+     "name": {
+      "ru": "Чеснок",
+      "uz": "Sarimsoq",
+      "en": "Garlic"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "chesnok"
+    }
+   ]
+  },
+  {
+   "id": "sides",
+   "name": {
+    "ru": "🍟 Гарниры и соусы",
+    "uz": "🍟 Garnirlar va souslar",
+    "en": "🍟 Sides & sauces"
+   },
+   "items": [
+    {
+     "id": "limon",
+     "price": 10000,
+     "name": {
+      "ru": "Лимон",
+      "uz": "Limon",
+      "en": "Lemon"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "limon"
+    },
+    {
+     "id": "fri",
+     "price": 22000,
+     "name": {
+      "ru": "Фри",
+      "uz": "Fri kartoshka",
+      "en": "French fries"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "fri"
+    },
+    {
+     "id": "sous",
+     "price": 10000,
+     "name": {
+      "ru": "Соус",
+      "uz": "Sous",
+      "en": "Sauce"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "sous"
+    }
+   ]
+  },
+  {
+   "id": "drinks",
+   "name": {
+    "ru": "🥤 Напитки",
+    "uz": "🥤 Ichimliklar",
+    "en": "🥤 Drinks"
+   },
+   "items": [
+    {
+     "id": "aqua_s",
+     "price": 5000,
+     "name": {
+      "ru": "Bon-aqua (малая)",
+      "uz": "Bon-aqua (kichik)",
+      "en": "Bon-aqua (small)"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "bonaqua"
+    },
+    {
+     "id": "aqua_m",
+     "price": 7000,
+     "name": {
+      "ru": "Bon-aqua (средняя)",
+      "uz": "Bon-aqua (o'rta)",
+      "en": "Bon-aqua (medium)"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "bonaqua"
+    },
+    {
+     "id": "aqua_l",
+     "price": 10000,
+     "name": {
+      "ru": "Bon-aqua (большая)",
+      "uz": "Bon-aqua (katta)",
+      "en": "Bon-aqua (large)"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "bonaqua"
+    },
+    {
+     "id": "chortoq_05",
+     "price": 15000,
+     "name": {
+      "ru": "Chortoq 0.5 л",
+      "uz": "Chortoq 0.5 l",
+      "en": "Chortoq 0.5 L"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "chortoq"
+    },
+    {
+     "id": "chortoq_075",
+     "price": 20000,
+     "name": {
+      "ru": "Chortoq 0.75 л",
+      "uz": "Chortoq 0.75 l",
+      "en": "Chortoq 0.75 L"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "chortoq"
+    },
+    {
+     "id": "cola_l",
+     "price": 20000,
+     "name": {
+      "ru": "Cola / Fanta / Sprite / Pepsi (большая)",
+      "uz": "Cola / Fanta / Sprite / Pepsi (katta)",
+      "en": "Cola / Fanta / Sprite / Pepsi (large)"
+     },
+     "desc": {
+      "ru": "Укажите напиток (Cola, Fanta, Sprite или Pepsi) в комментарии к заказу",
+      "uz": "Ichimlikni (Cola, Fanta, Sprite yoki Pepsi) buyurtma izohida yozing",
+      "en": "Specify the drink (Cola, Fanta, Sprite or Pepsi) in the order comment"
+     },
+     "photo_key": "cola"
+    },
+    {
+     "id": "cola_m",
+     "price": 14000,
+     "name": {
+      "ru": "Cola / Fanta / Sprite / Pepsi (средняя)",
+      "uz": "Cola / Fanta / Sprite / Pepsi (o'rta)",
+      "en": "Cola / Fanta / Sprite / Pepsi (medium)"
+     },
+     "desc": {
+      "ru": "Укажите напиток (Cola, Fanta, Sprite или Pepsi) в комментарии к заказу",
+      "uz": "Ichimlikni (Cola, Fanta, Sprite yoki Pepsi) buyurtma izohida yozing",
+      "en": "Specify the drink (Cola, Fanta, Sprite or Pepsi) in the order comment"
+     },
+     "photo_key": "cola"
+    },
+    {
+     "id": "cola_s",
+     "price": 10000,
+     "name": {
+      "ru": "Cola / Fanta / Sprite / Pepsi (малая)",
+      "uz": "Cola / Fanta / Sprite / Pepsi (kichik)",
+      "en": "Cola / Fanta / Sprite / Pepsi (small)"
+     },
+     "desc": {
+      "ru": "Укажите напиток (Cola, Fanta, Sprite или Pepsi) в комментарии к заказу",
+      "uz": "Ichimlikni (Cola, Fanta, Sprite yoki Pepsi) buyurtma izohida yozing",
+      "en": "Specify the drink (Cola, Fanta, Sprite or Pepsi) in the order comment"
+     },
+     "photo_key": "cola"
+    },
+    {
+     "id": "sok",
+     "price": 25000,
+     "name": {
+      "ru": "Сок",
+      "uz": "Sharbat",
+      "en": "Juice"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "sok"
+    },
+    {
+     "id": "sok_mini",
+     "price": 7000,
+     "name": {
+      "ru": "Сок маленький",
+      "uz": "Sharbat (kichik)",
+      "en": "Juice (small)"
+     },
+     "desc": {
+      "ru": "",
+      "uz": "",
+      "en": ""
+     },
+     "photo_key": "sok_mini"
+    }
+   ]
+  }
+ ]
+}
