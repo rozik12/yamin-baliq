@@ -353,3 +353,12 @@ def stats_lines(tenant):
 
 core.register_export("recruiter", "applications.csv", export_applications)
 core.register_stats("recruiter", stats_lines)
+
+
+def daily_lines(tenant, today):
+    n = db.execute("SELECT COUNT(*) FROM applications WHERE tenant=? AND status='new'", (tenant,)).fetchone()[0]
+    return [f"👔 Откликов ждут решения: {n}"] if n else []
+
+
+core.register_daily("recruiter", daily_lines)
+core.register_stale("applications", ("new",), 60, "Отклик")

@@ -37,7 +37,7 @@ core.register_help("support", "🆘 Поддержка", [
     "Обращения клиентов приходят сюда. Нажмите «✍️ Ответить»: клиент получит ответ в боте.",
 ])
 db.execute("CREATE TABLE IF NOT EXISTS faq(id INTEGER PRIMARY KEY, tenant TEXT, q TEXT, a TEXT)")
-db.execute("CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, text TEXT, status TEXT DEFAULT 'open')")
+db.execute("CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, text TEXT, status TEXT DEFAULT 'open', created TEXT)")
 db.commit()
 
 
@@ -63,7 +63,7 @@ async def faq_answer(c: CallbackQuery):
 
 async def ticket_done(bot, uid, ans, ctx):
     tenant = ctx["tenant"]
-    cur = db.execute("INSERT INTO tickets(tenant,user_id,text) VALUES(?,?,?)", (tenant, uid, ans["text"]))
+    cur = db.execute("INSERT INTO tickets(tenant,user_id,text,created) VALUES(?,?,?,datetime('now'))", (tenant, uid, ans["text"]))
     db.commit()
     tid = cur.lastrowid
     await bot.send_message(uid, t(uid, "sp_ok", n=tid), reply_markup=main_kb(uid))
@@ -182,3 +182,12 @@ def stats_lines(tenant):
 
 core.register_export("support", "tickets.csv", export_tickets)
 core.register_stats("support", stats_lines)
+
+
+def daily_lines(tenant, today):
+    n = db.execute("SELECT COUNT(*) FROM tickets WHERE tenant=? AND status='open'", (tenant,)).fetchone()[0]
+    return [f"🆘 Открытых обращений: {n}"] if n else []
+
+
+core.register_daily("support", daily_lines)
+core.register_stale("tickets", ("open",), 30, "Обращение")

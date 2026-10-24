@@ -30,6 +30,7 @@ SPACES_BTN = "🏢 Пространства"
 SETTINGS_BTN = "⚙️ Настройки"
 NEW_SPACE_BTN = "➕ Новое заведение"
 MORE_BTN, BACK_BTN = "⚙️ Ещё", "⬅️ Назад"
+BROADCAST_BTN = "📣 Рассылка"
 HELP_BTN, LINK_BTN, STAFF_BTN = "❓ Помощь", "🔗 Ссылка и QR", "👥 Сотрудник"
 CREATE_BTN = "🚀 Создать бота для моего бизнеса"
 SELF_SIGNUP = os.environ.get("SELF_SIGNUP", "1") == "1"
@@ -45,7 +46,9 @@ for ddl in ("users(id INTEGER PRIMARY KEY, lang TEXT)",
             "banned(tenant TEXT, id INTEGER, PRIMARY KEY(tenant, id))",
             "settings(tenant TEXT, key TEXT, value TEXT, PRIMARY KEY(tenant, key))",
             "ratings(tenant TEXT, module TEXT, ref INTEGER, user_id INTEGER, rating INTEGER, PRIMARY KEY(tenant, module, ref, user_id))",
-            "scheduled(id INTEGER PRIMARY KEY, tenant TEXT, run_at TEXT, text TEXT, sent INTEGER DEFAULT 0)"):
+            "scheduled(id INTEGER PRIMARY KEY, tenant TEXT, run_at TEXT, text TEXT, sent INTEGER DEFAULT 0)",
+            "profiles(tenant TEXT, user_id INTEGER, name TEXT, username TEXT, joined TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(tenant, user_id))",
+            "referrals(tenant TEXT, user_id INTEGER, referrer INTEGER, rewarded INTEGER DEFAULT 0, PRIMARY KEY(tenant, user_id))"):
     db.execute(f"CREATE TABLE IF NOT EXISTS {ddl}")
 db.commit()
 
@@ -65,6 +68,7 @@ SETTING_DEFS: dict[str, tuple] = {}  # key -> (label, type, module)
 WIZARDS: dict[str, dict] = {}
 EXPORTS = []
 STATS = []
+DAILY = []
 
 
 def register_texts(d):
@@ -79,6 +83,11 @@ def register_export(module, filename, fn):
 def register_stats(module, fn):
     """fn(tenant) -> список строк статистики."""
     STATS.append((module, fn))
+
+
+def register_daily(module, fn):
+    """fn(tenant, today_local: date) -> список строк для утренней сводки."""
+    DAILY.append((module, fn))
 
 
 def register_background(fn):
@@ -198,9 +207,7 @@ def main_kb(uid):
         if mods and uid in more_page:
             for mod in mods:
                 labels += [x for x in MODULE_BUTTONS[mod]["more"] if x not in labels]
-            if any(d[2] & set(mods) for d in SETTING_DEFS.values()):
-                labels.append(SETTINGS_BTN)
-            labels += [STATS_BTN, EXPORT_BTN, LINK_BTN, STAFF_BTN, HELP_BTN, BACK_BTN]
+            labels += [SETTINGS_BTN, BROADCAST_BTN, STATS_BTN, EXPORT_BTN, LINK_BTN, STAFF_BTN, HELP_BTN, BACK_BTN]
         else:
             for mod in mods:
                 labels += [x for x in MODULE_BUTTONS[mod]["admin"] if x not in labels]
@@ -214,7 +221,7 @@ def main_kb(uid):
         keys = []
         for mod in mods:
             keys += [x for x in MODULE_BUTTONS[mod]["client"] if x not in keys]
-        for key in keys + ["b_lang"]:
+        for key in keys + (["b_about", "b_invite", "b_lang"] if mods else ["b_lang"]):
             b.button(text=t(uid, key))
     return b.adjust(2).as_markup(resize_keyboard=True)
 
@@ -229,7 +236,18 @@ async def ban_guard(handler, event, data):
     user = getattr(event, "from_user", None)
     if user and is_banned(user.id):
         return None
+    if user:
+        touch_profile(user)
     return await handler(event, data)
+
+
+def touch_profile(user):
+    tenant = tenant_of(user.id)
+    if tenant:
+        db.execute("INSERT INTO profiles(tenant,user_id,name,username) VALUES(?,?,?,?) ON CONFLICT(tenant,user_id) DO UPDATE SET "
+                   "name=excluded.name, username=excluded.username",
+                   (tenant, user.id, str(user.full_name or ""), user.username if isinstance(getattr(user, "username", None), str) else None))
+        db.commit()
 
 
 router.message.outer_middleware(ban_guard)
@@ -283,10 +301,17 @@ async def start(m: Message, state: FSMContext, command: CommandObject):
         set_user_tenant(uid, row[0])
         return await m.answer(f"✅ Вы администратор заведения «{get_tenant(row[0])['name']}».", reply_markup=main_kb(uid))
     if arg:
-        tenant = get_tenant(arg)
+        slug, _, ref = arg.partition("--r")
+        tenant = get_tenant(slug)
         if not (tenant and tenant["active"]):
             return await m.answer("Заведение не найдено. Проверьте ссылку.")
-        set_user_tenant(uid, arg)
+        is_new = not db.execute("SELECT 1 FROM profiles WHERE tenant=? AND user_id=?", (slug, uid)).fetchone()
+        set_user_tenant(uid, slug)
+        if ref.isdigit() and is_new and int(ref) != uid and not is_admin(uid, slug) and db.execute(
+                "SELECT 1 FROM profiles WHERE tenant=? AND user_id=?", (slug, int(ref))).fetchone():
+            db.execute("INSERT OR IGNORE INTO referrals(tenant,user_id,referrer) VALUES(?,?,?)", (slug, uid, int(ref)))
+            db.commit()
+    touch_profile(m.from_user)
     if is_admin(uid):
         tenant = tenant_of(uid)
         text = (f"🛠 Панель администратора «{brand_of(uid)}»" if tenant
@@ -451,14 +476,17 @@ async def unban_cmd(m: Message, command: CommandObject):
         await m.answer("✅ Разблокирован")
 
 
-async def send_to_clients(bot, tenant, text, pause=0.05):
+async def send_to_clients(bot, tenant, text, pause=0.05, photo=None):
     sent = 0
     for (uid,) in db.execute("SELECT user_id FROM user_tenant WHERE tenant=? AND user_id NOT IN (SELECT user_id FROM tenant_admins WHERE tenant=?)",
                              (tenant, tenant)).fetchall():
         if uid in OWNERS:
             continue
         try:
-            await bot.send_message(uid, text)
+            if photo:
+                await bot.send_photo(uid, photo, caption=text[:1024])
+            else:
+                await bot.send_message(uid, text)
             sent += 1
         except Exception:
             pass
@@ -555,7 +583,7 @@ async def export_cmd(m: Message):
     mods = modules_of(m.from_user.id)
     sent = 0
     for mod, filename, fn in EXPORTS:
-        if mod not in mods:
+        if mod not in mods and mod != "*":
             continue
         header, rows = fn(tenant)
         out = io.StringIO()
@@ -574,7 +602,7 @@ def tenant_stats(tenant):
                          (tenant, tenant)).fetchone()[0]
     lines = [f"👥 Клиентов: {clients}"]
     for mod, fn in STATS:
-        if mod in mods:
+        if mod in mods or mod == "*":
             lines += fn(tenant)
     return lines
 
@@ -744,7 +772,7 @@ async def advance(target, state, uid):
         rb = ReplyKeyboardBuilder()
         rb.button(text=t(uid, "send_phone"), request_contact=True)
         kb = rb.as_markup(resize_keyboard=True, one_time_keyboard=True)
-    elif kind == "address":
+    elif kind in ("address", "geo"):
         rb = ReplyKeyboardBuilder()
         rb.button(text=t(uid, "send_loc"), request_location=True)
         kb = rb.as_markup(resize_keyboard=True, one_time_keyboard=True)
@@ -782,6 +810,16 @@ def parse_input(kind, m, optional):
             return True, f"photo:{m.photo[-1].file_id}"
         if m.document:
             return True, f"doc:{m.document.file_id}"
+        return False, None
+    if kind == "geo":
+        return (True, f"{m.location.latitude},{m.location.longitude}") if m.location else (False, None)
+    if kind == "date":
+        candidates = [(text, "%Y-%m-%d"), (text, "%d.%m.%Y"), (f"{text}.{dt.date.today().year}", "%d.%m.%Y")]
+        for raw, fmt in candidates:
+            try:
+                return True, dt.datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
         return False, None
     if kind == "address":
         if m.location:
@@ -841,8 +879,9 @@ async def _save_setting(bot, uid, ans, ctx):
     await bot.send_message(uid, "✅ Сохранено", reply_markup=main_kb(uid))
 
 
-for _typ in ("text", "int", "time"):
-    WIZARDS[f"setting_{_typ}"] = {"steps": [{"key": "value", "prompt": lambda uid, ans, ctx: f"Введите значение: {ctx['label']}", "type": _typ}],
+for _typ in ("text", "int", "time", "geo"):
+    WIZARDS[f"setting_{_typ}"] = {"steps": [{"key": "value", "prompt": lambda uid, ans, ctx: ("Находясь в заведении, нажмите кнопку «Отправить геолокацию» внизу (или отправьте точку с карты)."
+                                                          if ctx["key"] == "geo" else f"Введите значение: {ctx['label']}"), "type": _typ}],
                                   "done": _save_setting}
 
 
@@ -855,7 +894,7 @@ async def settings_menu(m: Message):
     mods = modules_of(uid)
     b = InlineKeyboardBuilder()
     for key, (label, typ, mod) in SETTING_DEFS.items():
-        if mod & set(mods):
+        if mod & (set(mods) | {"*"}):
             value = get_setting(tenant, key)
             b.button(text=f"{label}: {value if value else '—'}"[:60], callback_data=f"set:{key}")
     await m.answer("⚙️ Настройки заведения. Нажмите, чтобы изменить:", reply_markup=b.adjust(1).as_markup())
@@ -1028,6 +1067,186 @@ async def staff_cmd(m: Message):
         u = await bot_username(m.bot)
         await m.answer("👥 Отправьте эту ссылку сотруднику. Перейдя по ней, он сможет принимать заказы и заявки:\n"
                        f"https://t.me/{u}?start={new_invite(tenant)}\n\nСсылка одноразовая. Для следующего сотрудника нажмите кнопку ещё раз.")
+
+
+# ====================== «О нас», приглашение друга, клиенты ======================
+TXT.update({
+    "b_about": {"ru": "ℹ️ О нас", "uz": "ℹ️ Biz haqimizda", "en": "ℹ️ About us"},
+    "b_invite": {"ru": "👥 Пригласить друга", "uz": "👥 Do'stni taklif qilish", "en": "👥 Invite a friend"},
+    "about_empty": {"ru": "Информация скоро появится", "uz": "Ma'lumot tez orada paydo bo'ladi", "en": "Information coming soon"},
+    "invite_text": {"ru": "Отправьте другу эту ссылку:\n{link}", "uz": "Do'stingizga shu havolani yuboring:\n{link}", "en": "Send this link to a friend:\n{link}"},
+    "invite_bonus": {"ru": "\n\n🎁 Когда друг сделает первый заказ, вы получите {bonus} баллов.", "uz": "\n\n🎁 Do'stingiz birinchi buyurtma bergach, {bonus} ball olasiz.",
+                     "en": "\n\n🎁 When your friend places a first order, you get {bonus} points."},
+})
+register_settings("*", [("about", "📝 Коротко о вас (для клиентов)", "text"), ("address", "📍 Адрес", "text"), ("hours", "🕒 Часы работы", "text"),
+                        ("phone", "📞 Телефон", "text"), ("instagram", "📷 Instagram или сайт", "text"), ("geo", "🗺 Точка на карте", "geo"),
+                        ("daily_summary", "☀️ Утренняя сводка (1 — да, 0 — нет)", "int")])
+
+
+@router.message(is_btn("b_about"))
+async def about_cmd(m: Message):
+    uid, tenant = m.from_user.id, tenant_of(m.from_user.id)
+    if not tenant:
+        return
+    lines = [f"<b>{brand_of(uid)}</b>"]
+    for key, icon in (("about", ""), ("address", "📍 "), ("hours", "🕒 "), ("phone", "📞 "), ("instagram", "📷 ")):
+        value = get_setting(tenant, key)
+        if value:
+            lines.append(f"{icon}{value}")
+    if len(lines) == 1:
+        lines.append(t(uid, "about_empty"))
+    await m.answer("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+    geo = get_setting(tenant, "geo")
+    if geo:
+        try:
+            lat, lon = (float(x) for x in geo.split(","))
+            await m.answer_location(lat, lon)
+        except Exception:
+            logging.warning("bad geo setting")
+
+
+@router.message(is_btn("b_invite"))
+async def invite_cmd(m: Message):
+    uid, tenant = m.from_user.id, tenant_of(m.from_user.id)
+    if not tenant:
+        return
+    u = await bot_username(m.bot)
+    text = t(uid, "invite_text", link=f"https://t.me/{u}?start={tenant}--r{uid}")
+    bonus = int(get_setting(tenant, "referral_bonus", 0) or 0)
+    if bonus:
+        text += t(uid, "invite_bonus", bonus=bonus)
+    await m.answer(text)
+
+
+def export_clients(tenant):
+    rows = db.execute("SELECT user_id, name, COALESCE(username,''), joined FROM profiles WHERE tenant=? AND user_id NOT IN "
+                      "(SELECT user_id FROM tenant_admins WHERE tenant=?) ORDER BY joined", (tenant, tenant)).fetchall()
+    return ["ID", "Имя", "Username", "Первый заход"], rows
+
+
+EXPORTS.append(("*", "clients.csv", export_clients))
+
+
+def clients_stats(tenant):
+    new7 = db.execute("SELECT COUNT(*) FROM profiles WHERE tenant=? AND date(joined)>=date('now','-6 days') AND user_id NOT IN "
+                      "(SELECT user_id FROM tenant_admins WHERE tenant=?)", (tenant, tenant)).fetchone()[0]
+    return [f"🆕 Новых клиентов за 7 дней: {new7}"]
+
+
+STATS.append(("*", clients_stats))
+
+
+# ====================== рассылка кнопкой с предпросмотром ======================
+pending_broadcast: dict[int, tuple] = {}
+
+
+async def broadcast_preview(bot, uid, ans, ctx):
+    tenant = ctx["tenant"]
+    n = db.execute("SELECT COUNT(*) FROM user_tenant WHERE tenant=? AND user_id NOT IN (SELECT user_id FROM tenant_admins WHERE tenant=?)", (tenant, tenant)).fetchone()[0]
+    pending_broadcast[uid] = (tenant, ans["text"], ans.get("photo"))
+    b = InlineKeyboardBuilder()
+    b.button(text=f"✅ Отправить ({n} клиентам)", callback_data="bc:yes")
+    b.button(text="❌ Отмена", callback_data="bc:no")
+    if ans.get("photo"):
+        await bot.send_photo(uid, ans["photo"], caption=f"Предпросмотр:\n\n{ans['text']}"[:1024], reply_markup=b.adjust(1).as_markup())
+    else:
+        await bot.send_message(uid, f"Предпросмотр:\n\n{ans['text']}", reply_markup=b.adjust(1).as_markup())
+
+
+register_wizard("broadcast", [
+    {"key": "text", "prompt": "Напишите текст рассылки для всех ваших клиентов:", "type": "text"},
+    {"key": "photo", "prompt": "Добавьте картинку (фото) или отправьте «-», если не нужна.", "type": "photo", "optional": True},
+], broadcast_preview)
+
+
+@router.message(F.text == BROADCAST_BTN)
+async def broadcast_button(m: Message, state: FSMContext):
+    tenant = tenant_of(m.from_user.id)
+    if tenant and is_admin(m.from_user.id):
+        await start_wizard(m, state, "broadcast", m.from_user.id, {"tenant": tenant})
+
+
+@router.callback_query(F.data.regexp(r"^bc:(yes|no)$"))
+async def broadcast_confirm(c: CallbackQuery):
+    uid = c.from_user.id
+    pending = pending_broadcast.pop(uid, None)
+    if not is_admin(uid) or not pending:
+        return await c.answer("Рассылка уже отправлена или отменена", show_alert=True)
+    if c.data == "bc:no":
+        await c.message.answer("Отменено")
+        return await c.answer()
+    tenant, text, photo = pending
+    sent = await send_to_clients(c.bot, tenant, text, photo=photo)
+    await c.message.answer(f"✅ Рассылка отправлена: {sent} клиентам")
+    await c.answer()
+
+
+# ====================== утренняя сводка и напоминания «не потеряйте клиента» ======================
+def local_today(tenant, now_utc=None):
+    return ((now_utc or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)) + dt.timedelta(hours=tz_hours(tenant)))
+
+
+def daily_summary_text(tenant, today):
+    lines = [f"☀️ Доброе утро! Сводка «{(get_tenant(tenant) or {}).get('name', '')}» на {today.strftime('%d.%m')}:"]
+    mods = (get_tenant(tenant) or {"module": ""})["module"].split(",")
+    for mod, fn in DAILY:
+        if mod in mods:
+            lines += fn(tenant, today.date())
+    lines += tenant_stats(tenant)
+    return "\n".join(lines)
+
+
+async def send_daily_summaries(bot, now_utc=None):
+    sent = 0
+    for (slug,) in db.execute("SELECT slug FROM tenants WHERE active=1").fetchall():
+        local = local_today(slug, now_utc)
+        today = local.strftime("%Y-%m-%d")
+        if local.hour != 9 or get_setting(slug, "last_summary") == today or get_setting(slug, "daily_summary", "1") == "0":
+            continue
+        set_setting(slug, "last_summary", today)
+        await notify_admins(bot, slug, daily_summary_text(slug, local))
+        sent += 1
+    return sent
+
+
+STALE_RULES = []  # (таблица, статусы, минут, колонка id, шаблон текста)
+
+
+def register_stale(table, statuses, minutes, label):
+    """Напоминает админам о записях, которые долго без решения. Таблица должна иметь tenant, status, created, nudged."""
+    cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+    if "nudged" not in cols:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN nudged INTEGER DEFAULT 0")
+    if "created" not in cols:  # у старых таблиц даты не было: пустая дата означает «не напоминать»
+        db.execute(f"ALTER TABLE {table} ADD COLUMN created TEXT")
+    db.commit()
+    STALE_RULES.append((table, statuses, minutes, label))
+
+
+async def nudge_stale(bot):
+    count = 0
+    for table, statuses, minutes, label in STALE_RULES:
+        marks = ",".join("?" * len(statuses))
+        for rid, tenant in db.execute(f"SELECT id, tenant FROM {table} WHERE nudged=0 AND status IN ({marks}) AND created IS NOT NULL "
+                                      f"AND created <= datetime('now','-{minutes} minutes')", statuses).fetchall():
+            db.execute(f"UPDATE {table} SET nudged=1 WHERE id=?", (rid,))
+            db.commit()
+            await notify_admins(bot, tenant, f"⏰ {label} №{rid} ждёт вашего решения уже больше {minutes} мин. Не потеряйте клиента!")
+            count += 1
+    return count
+
+
+async def summary_loop(bot):
+    while True:
+        await asyncio.sleep(120)
+        try:
+            await send_daily_summaries(bot)
+            await nudge_stale(bot)
+        except Exception:
+            logging.exception("summary loop failed")
+
+
+register_background(summary_loop)
 
 
 # ====================== фоновые задачи и запуск ======================

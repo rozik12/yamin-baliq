@@ -59,7 +59,7 @@ class ExportStatsTests(Base):
         self.assertNotIn("Чужой", data)
         m = msg(uid=ADM_B)
         run(core.export_cmd(m))
-        self.assertEqual([c[1]["caption"].split(":")[0] for c in m.answer_document.call_args_list], ["orders.csv"])
+        self.assertEqual(sorted(c[1]["caption"].split(":")[0] for c in m.answer_document.call_args_list), ["clients.csv", "orders.csv"])
         m = msg(uid=CLI_A)
         run(core.export_cmd(m))
         m.answer_document.assert_not_awaited()

@@ -1,4 +1,5 @@
 """Модуль «Магазин»: каталог, корзина, заказ (доставка или самовывоз), оплата наличными или переводом на карту, статусы."""
+import datetime as dt
 import json
 import logging
 
@@ -57,6 +58,13 @@ core.register_texts({
     "shop_bonus_keep": {"ru": "Копить", "uz": "Jamg'arish", "en": "Keep saving"},
     "shop_earned": {"ru": "💎 Начислено {n} баллов. Баланс: {bal}", "uz": "💎 {n} ball qo'shildi. Balans: {bal}", "en": "💎 {n} points added. Balance: {bal}"},
     "shop_balance": {"ru": "💎 Ваши баллы: {bal}", "uz": "💎 Ballaringiz: {bal}", "en": "💎 Your points: {bal}"},
+    "b_popular": {"ru": "🔥 Популярное", "uz": "🔥 Ommabop", "en": "🔥 Popular"},
+    "b_search": {"ru": "🔍 Поиск", "uz": "🔍 Qidirish", "en": "🔍 Search"},
+    "shop_q_search": {"ru": "Что ищете? Напишите название.", "uz": "Nima qidiryapsiz? Nomini yozing.", "en": "What are you looking for? Type a name."},
+    "shop_nothing": {"ru": "Ничего не нашли. Попробуйте другое слово.", "uz": "Hech narsa topilmadi. Boshqa so'z yozing.", "en": "Nothing found. Try another word."},
+    "shop_repeat": {"ru": "🔁 Повторить", "uz": "🔁 Takrorlash", "en": "🔁 Repeat"},
+    "shop_ref_bonus": {"ru": "🎁 Ваш друг сделал первый заказ! Вам начислено {n} баллов.", "uz": "🎁 Do'stingiz birinchi buyurtma berdi! Sizga {n} ball qo'shildi.",
+                       "en": "🎁 Your friend placed a first order! You received {n} points."},
     "shop_st_new": {"ru": "ожидает", "uz": "kutilmoqda", "en": "pending"},
     "shop_st_verify": {"ru": "проверяем оплату", "uz": "to'lov tekshirilmoqda", "en": "checking payment"},
     "shop_st_accepted": {"ru": "принят ✅", "uz": "qabul qilindi ✅", "en": "accepted ✅"},
@@ -68,7 +76,8 @@ core.register_texts({
 core.register_settings("shop", [("card_number", "💳 Номер карты", "text"), ("card_holder", "👤 Владелец карты", "text"),
                                 ("delivery_fee", "🚚 Стоимость доставки", "int"), ("free_delivery_from", "🆓 Бесплатная доставка от", "int"),
                                 ("phone", "📞 Телефон", "text"), ("currency", "💱 Валюта (сум, $ ...)", "text"),
-                                ("cashback_percent", "💎 Кешбэк баллами, %", "int")])
+                                ("cashback_percent", "💎 Кешбэк баллами, %", "int"),
+                                ("referral_bonus", "🎁 Баллов за приглашённого друга", "int")])
 
 
 def cleanup(slug):
@@ -79,13 +88,15 @@ def cleanup(slug):
     db.commit()
 
 
-core.register_module("shop", ["b_catalog", "b_cart", "b_orders"], [ADM_ORDERS, ADM_ADDP, ADM_CATALOG], cleanup=cleanup, more_labels=[ADM_REPORT, ADM_PROMO])
+core.register_module("shop", ["b_catalog", "b_cart", "b_orders", "b_popular", "b_search"], [ADM_ORDERS, ADM_ADDP, ADM_CATALOG], cleanup=cleanup, more_labels=[ADM_REPORT, ADM_PROMO])
 core.register_help("shop", "🛍 Магазин, кафе, доставка", [
     "Нажмите «➕ Товар» и добавьте первое блюдо или товар: раздел, название, цена, фото.",
     "Откройте «⚙️ Ещё» → «⚙️ Настройки»: укажите телефон, номер карты для оплаты и стоимость доставки.",
     "Нажмите «⚙️ Ещё» → «🔗 Ссылка и QR» и покажите клиентам.",
     "Новые заказы приходят сюда сообщением. Нажмите «Принять», потом «Готов» и «Выдан»: клиент получает уведомления сам.",
     "Цену или фото можно поменять в «🗂 Каталог». Скидки: «⚙️ Ещё» → «🎟 Промокоды».",
+    "Чтобы клиенты возвращались: «⚙️ Ещё» → «⚙️ Настройки» → включите кешбэк баллами и бонус за приглашённого друга.",
+    "Хотите сообщить об акции? «⚙️ Ещё» → «📣 Рассылка».",
 ])
 db.execute("CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, tenant TEXT, category TEXT, name TEXT, price INT, descr TEXT, photo TEXT, active INTEGER DEFAULT 1)")
 db.execute("CREATE TABLE IF NOT EXISTS shop_orders(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, items TEXT, total INT, status TEXT DEFAULT 'new', text TEXT, proof TEXT, dest TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP)")
@@ -383,6 +394,7 @@ async def my_orders(m: Message):
         b = InlineKeyboardBuilder()
         if status in ("new", "verify"):
             b.button(text=t(uid, "shop_cancel"), callback_data=f"scx:{oid}")
+        b.button(text=t(uid, "shop_repeat"), callback_data=f"srep:{oid}")
         await m.answer(f"№{oid} · {money(tenant, total)} · {t(uid, 'shop_st_' + status)}", reply_markup=b.as_markup())
 
 
@@ -497,6 +509,7 @@ async def order_action(c: CallbackQuery):
     except Exception:
         pass
     if new == "done":
+        await reward_referrer(c.bot, tenant, uid)
         await credit_cashback(c.bot, tenant, uid, oid)
         await core.ask_rating(c.bot, uid, "shop", int(oid))
     suffix = f"\n→ {STATUS_RU[new]}"
@@ -688,3 +701,127 @@ def stats_lines(tenant):
 
 core.register_export("shop", "orders.csv", export_orders)
 core.register_stats("shop", stats_lines)
+
+
+# ---------------- поиск, популярное, повтор заказа ----------------
+async def send_found(target, uid, rows):
+    tenant = tenant_of(uid)
+    if not rows:
+        return await target.answer(t(uid, "shop_nothing"))
+    for pid, name, price, descr, photo in rows:
+        b = InlineKeyboardBuilder()
+        b.button(text=t(uid, "shop_add"), callback_data=f"sa:{pid}")
+        caption = f"<b>{name}</b> — {money(tenant, price)}\n{descr or ''}"
+        try:
+            if photo:
+                await target.answer_photo(photo, caption=caption, parse_mode="HTML", reply_markup=b.as_markup())
+                continue
+        except Exception:
+            logging.warning("product photo failed")
+        await target.answer(caption, parse_mode="HTML", reply_markup=b.as_markup())
+
+
+async def search_done(bot, uid, ans, ctx):
+    q = ans["q"].casefold().strip()  # регистр сравниваем в Python: SQLite lower() не понимает кириллицу
+    rows = [r for r in db.execute("SELECT id, name, price, descr, photo, category FROM products WHERE tenant=? AND active=1 ORDER BY id", (ctx["tenant"],))
+            if q in f"{r[1]} {r[5]} {r[3] or ''}".casefold()][:10]
+    rows = [r[:5] for r in rows]
+    class _T:  # отправка через бота, как через Message.answer
+        async def answer(self, text, **kw):
+            return await bot.send_message(uid, text, **{k: v for k, v in kw.items() if k in ("reply_markup", "parse_mode")})
+
+        async def answer_photo(self, photo, **kw):
+            return await bot.send_photo(uid, photo, **kw)
+    await send_found(_T(), uid, rows)
+
+
+core.register_wizard("shop_search", [{"key": "q", "prompt": "shop_q_search", "type": "text"}], search_done)
+
+
+@router.message(is_btn("b_search"))
+async def search_start(m: Message, state: FSMContext):
+    await core.start_wizard(m, state, "shop_search", m.from_user.id, {"tenant": tenant_of(m.from_user.id)})
+
+
+def popular_ids(tenant, limit=6):
+    counts: dict[int, int] = {}
+    for (items,) in db.execute("SELECT items FROM shop_orders WHERE tenant=? AND status IN ('accepted','ready','done')", (tenant,)):
+        for pid, q in json.loads(items or "{}").items():
+            counts[int(pid)] = counts.get(int(pid), 0) + q
+    return [pid for pid, _ in sorted(counts.items(), key=lambda x: -x[1])[:limit]]
+
+
+@router.message(is_btn("b_popular"))
+async def popular(m: Message):
+    uid, tenant = m.from_user.id, tenant_of(m.from_user.id)
+    ids = popular_ids(tenant)
+    rows = [db.execute("SELECT id, name, price, descr, photo FROM products WHERE id=? AND tenant=? AND active=1", (pid, tenant)).fetchone() for pid in ids]
+    rows = [r for r in rows if r]
+    if not rows:  # пока нет продаж: показываем новинки
+        rows = db.execute("SELECT id, name, price, descr, photo FROM products WHERE tenant=? AND active=1 ORDER BY id DESC LIMIT 6", (tenant,)).fetchall()
+    await send_found(m, uid, rows)
+
+
+@router.callback_query(F.data.startswith("srep:"))
+async def repeat_order(c: CallbackQuery):
+    uid, tenant = c.from_user.id, tenant_of(c.from_user.id)
+    row = db.execute("SELECT items FROM shop_orders WHERE id=? AND tenant=? AND user_id=?", (int(c.data.split(":")[1]), tenant, uid)).fetchone()
+    if not row:
+        return await c.answer()
+    cart = cart_of(uid)
+    for pid, q in json.loads(row[0] or "{}").items():
+        p = product(int(pid), tenant)
+        if p and p["active"]:
+            cart[int(pid)] = cart.get(int(pid), 0) + q
+    text, kb = cart_view(uid)
+    await c.message.answer(text, reply_markup=kb)
+    await c.answer()
+
+
+# ---------------- приглашение друга ----------------
+async def reward_referrer(bot, tenant, uid):
+    bonus = int(get_setting(tenant, "referral_bonus", 0) or 0)
+    row = db.execute("SELECT referrer FROM referrals WHERE tenant=? AND user_id=? AND rewarded=0", (tenant, uid)).fetchone()
+    if not bonus or not row:
+        return
+    db.execute("UPDATE referrals SET rewarded=1 WHERE tenant=? AND user_id=?", (tenant, uid))
+    db.commit()
+    add_balance(tenant, row[0], bonus)
+    try:
+        await bot.send_message(row[0], t(row[0], "shop_ref_bonus", n=bonus))
+    except Exception:
+        logging.warning("referral notice not delivered")
+
+
+# ---------------- сводка, напоминания, лучшие клиенты ----------------
+def daily_lines(tenant, today):
+    y = (today - dt.timedelta(days=1)).isoformat()
+    shift = tz_shift(tenant)
+    n, total = db.execute("SELECT COUNT(*), COALESCE(SUM(total),0) FROM shop_orders WHERE tenant=? AND status IN ('accepted','ready','done') "
+                          "AND date(datetime(created, ?))=?", (tenant, shift, y)).fetchone()
+    waiting = db.execute("SELECT COUNT(*) FROM shop_orders WHERE tenant=? AND status IN ('new','verify')", (tenant,)).fetchone()[0]
+    lines = [f"🛍 Вчера: заказов {n}, выручка {money(tenant, total)}"]
+    if waiting:
+        lines.append(f"⚠️ Ждут вашего решения: {waiting}")
+    return lines
+
+
+def tz_shift(tenant):
+    return f"{core.tz_hours(tenant):+d} hours"
+
+
+def top_clients_line(tenant):
+    rows = db.execute("SELECT user_id, SUM(total), COUNT(*) FROM shop_orders WHERE tenant=? AND status IN ('accepted','ready','done') "
+                      "GROUP BY user_id ORDER BY 2 DESC LIMIT 3", (tenant,)).fetchall()
+    if not rows:
+        return []
+    names = []
+    for uid, total, cnt in rows:
+        p = db.execute("SELECT name FROM profiles WHERE tenant=? AND user_id=?", (tenant, uid)).fetchone()
+        names.append(f"{p[0] if p else uid} ({cnt} зак., {money(tenant, total)})")
+    return ["🏆 Лучшие клиенты: " + "; ".join(names)]
+
+
+core.register_daily("shop", daily_lines)
+core.register_stats("shop", lambda tenant: top_clients_line(tenant))
+core.register_stale("shop_orders", ("new", "verify"), 10, "Заказ")

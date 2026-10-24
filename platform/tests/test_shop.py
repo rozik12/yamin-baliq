@@ -47,7 +47,7 @@ class ShopTests(unittest.TestCase):
         return st
 
     def test_keyboards_merge_modules(self):
-        self.assertEqual(labels(core.main_kb, CLI_A), ["🛍 Каталог", "🛒 Корзина", "📜 Мои заказы", "🌐 Язык"])
+        self.assertEqual(labels(core.main_kb, CLI_A), ["🛍 Каталог", "🛒 Корзина", "📜 Мои заказы", "🔥 Популярное", "🔍 Поиск", "ℹ️ О нас", "👥 Пригласить друга", "🌐 Язык"])
         first, second = admin_pages(ADM_A)
         self.assertEqual(first, [shop.ADM_ORDERS, shop.ADM_ADDP, shop.ADM_CATALOG, core.MORE_BTN])
         self.assertIn(core.SETTINGS_BTN, second)

@@ -37,7 +37,7 @@ class LeadsTests(Base):
         return bot
 
     def test_two_modules_keyboard(self):
-        self.assertEqual(labels(core.main_kb, CLI_A), ["📝 Оставить заявку", "📄 Мои заявки", "❓ Вопросы", "🆘 Оператор", "🌐 Язык"])
+        self.assertEqual(labels(core.main_kb, CLI_A), ["📝 Оставить заявку", "📄 Мои заявки", "❓ Вопросы", "🆘 Оператор", "ℹ️ О нас", "👥 Пригласить друга", "🌐 Язык"])
         first, second = admin_pages(ADM_A)
         self.assertEqual(first, [leads.ADM_LEADS, support.ADM_TICKETS, core.MORE_BTN])
         for b in (leads.ADM_REPORT, support.ADM_ADDFAQ, support.ADM_FAQ, core.SETTINGS_BTN, core.STATS_BTN, core.EXPORT_BTN,

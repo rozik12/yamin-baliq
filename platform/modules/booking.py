@@ -11,7 +11,7 @@ import core
 from core import db, get_setting, is_admin, is_btn, main_kb, money, notify_admins, t, tenant_of
 
 router = Router()
-ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES, ADM_REPORT = "📋 Записи", "➕ Услуга", "🗂 Услуги", "📈 Отчёт записей"
+ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES, ADM_REPORT, ADM_DAYOFF = "📋 Записи", "➕ Услуга", "🗂 Услуги", "📈 Отчёт записей", "🚫 Выходной"
 STATUS_RU = {"pending": "🆕 ожидает", "confirmed": "✅ подтверждена", "rejected": "❌ отклонена", "cancelled": "🚫 отменена", "done": "🏁 выполнена"}
 BUSY = ("pending", "confirmed")
 
@@ -46,16 +46,19 @@ core.register_settings("booking", [("work_start", "🕘 Начало работ�
 def cleanup(slug):
     db.execute("DELETE FROM bookings WHERE tenant=?", (slug,))
     db.execute("DELETE FROM services WHERE tenant=?", (slug,))
+    db.execute("DELETE FROM dayoff WHERE tenant=?", (slug,))
     db.commit()
 
 
-core.register_module("booking", ["b_book", "b_mybook"], [ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES], cleanup=cleanup, more_labels=[ADM_REPORT])
+core.register_module("booking", ["b_book", "b_mybook"], [ADM_BOOKINGS, ADM_ADDSVC, ADM_SERVICES], cleanup=cleanup, more_labels=[ADM_REPORT, ADM_DAYOFF])
 core.register_help("booking", "💇 Запись на приём", [
     "Нажмите «➕ Услуга»: название, сколько минут длится и цена.",
     "Откройте «⚙️ Ещё» → «⚙️ Настройки»: время начала и конца работы.",
     "Нажмите «⚙️ Ещё» → «🔗 Ссылка и QR» и покажите клиентам.",
     "Новые записи приходят сюда. Нажмите «Подтвердить»: клиент получит сообщение, а за час до визита придёт напоминание.",
+    "Выходной или отпуск: «⚙️ Ещё» → «🚫 Выходной». В эти дни клиенты не смогут записаться.",
 ])
+db.execute("CREATE TABLE IF NOT EXISTS dayoff(tenant TEXT, day TEXT, PRIMARY KEY(tenant, day))")
 db.execute("CREATE TABLE IF NOT EXISTS services(id INTEGER PRIMARY KEY, tenant TEXT, name TEXT, minutes INT, price INT, active INTEGER DEFAULT 1)")
 db.execute("CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, tenant TEXT, user_id INT, service_id INT, start TEXT, name TEXT, phone TEXT, status TEXT DEFAULT 'pending', reminded INTEGER DEFAULT 0, created TEXT DEFAULT CURRENT_TIMESTAMP)")
 db.commit()
@@ -73,6 +76,8 @@ def hhmm(s):
 def free_slots(tenant, service, day, now=None):
     """Свободные времена начала для услуги в день day (date). Слоты идут с шагом длительности услуги."""
     now = now or local_now(tenant)
+    if is_dayoff(tenant, day):
+        return []
     start, end = hhmm(get_setting(tenant, "work_start", "09:00")), hhmm(get_setting(tenant, "work_end", "18:00"))
     step = max(15, service["minutes"])
     busy = []
@@ -89,6 +94,10 @@ def free_slots(tenant, service, day, now=None):
             out.append(f"{cur // 60:02d}:{cur % 60:02d}")
         cur += step
     return out
+
+
+def is_dayoff(tenant, day):
+    return bool(db.execute("SELECT 1 FROM dayoff WHERE tenant=? AND day=?", (tenant, day.isoformat() if hasattr(day, "isoformat") else day)).fetchone())
 
 
 def service_of(sid, tenant):
@@ -119,6 +128,8 @@ async def pick_service(c: CallbackQuery):
     b = InlineKeyboardBuilder()
     for i in range(7):
         d = today + dt.timedelta(days=i)
+        if is_dayoff(tenant, d):
+            continue
         b.button(text=d.strftime("%d.%m %a"), callback_data=f"bkd:{svc['id']}:{d.isoformat()}")
     await c.message.edit_text(f"{svc['name']}\n{t(uid, 'bk_pick_date')}", reply_markup=b.adjust(2).as_markup())
     await c.answer()
@@ -375,3 +386,63 @@ def stats_lines(tenant):
 
 core.register_export("booking", "bookings.csv", export_bookings)
 core.register_stats("booking", stats_lines)
+
+
+# ---------------- выходные дни ----------------
+async def dayoff_saved(bot, uid, ans, ctx):
+    tenant, day = ctx["tenant"], ans["day"]
+    db.execute("INSERT OR IGNORE INTO dayoff(tenant, day) VALUES(?,?)", (tenant, day))
+    db.commit()
+    affected = db.execute("SELECT COUNT(*) FROM bookings WHERE tenant=? AND status IN ('pending','confirmed') AND substr(start,1,10)=?", (tenant, day)).fetchone()[0]
+    warn = f"\n⚠️ На этот день уже есть записей: {affected}. Свяжитесь с клиентами (кнопка «📋 Записи»)." if affected else ""
+    await bot.send_message(uid, f"✅ {day} теперь выходной, запись закрыта.{warn}", reply_markup=main_kb(uid))
+
+
+core.register_wizard("booking_dayoff", [{"key": "day", "prompt": "Какая дата выходная? Например: 25.12 или 2026-12-25", "type": "date"}], dayoff_saved)
+
+
+@router.message(F.text == ADM_DAYOFF)
+async def dayoff_menu(m: Message):
+    tenant = tenant_of(m.from_user.id)
+    if not (tenant and is_admin(m.from_user.id)):
+        return
+    today = local_now(tenant).date().isoformat()
+    rows = db.execute("SELECT day FROM dayoff WHERE tenant=? AND day>=? ORDER BY day", (tenant, today)).fetchall()
+    b = InlineKeyboardBuilder()
+    for (day,) in rows:
+        b.button(text=f"🗑 {day}", callback_data=f"bkoff:{day}")
+    b.button(text="➕ Добавить выходной", callback_data="bkoffadd")
+    await m.answer("🚫 Выходные дни. Нажмите на дату, чтобы снова открыть запись." if rows else "Выходных пока нет.", reply_markup=b.adjust(2).as_markup())
+
+
+@router.callback_query(F.data == "bkoffadd")
+async def dayoff_add(c: CallbackQuery, state: FSMContext):
+    tenant = tenant_of(c.from_user.id)
+    if not (tenant and is_admin(c.from_user.id)):
+        return await c.answer("Нет доступа", show_alert=True)
+    await core.start_wizard(c.message, state, "booking_dayoff", c.from_user.id, {"tenant": tenant})
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("bkoff:"))
+async def dayoff_remove(c: CallbackQuery):
+    tenant = tenant_of(c.from_user.id)
+    if not (tenant and is_admin(c.from_user.id)):
+        return await c.answer("Нет доступа", show_alert=True)
+    db.execute("DELETE FROM dayoff WHERE tenant=? AND day=?", (tenant, c.data.split(":", 1)[1]))
+    db.commit()
+    await c.message.edit_text("✅ Запись на этот день снова открыта")
+    await c.answer()
+
+
+# ---------------- сводка и напоминания ----------------
+def daily_lines(tenant, today):
+    rows = db.execute("SELECT substr(b.start,12,5), s.name, b.name FROM bookings b JOIN services s ON s.id=b.service_id "
+                      "WHERE b.tenant=? AND b.status IN ('pending','confirmed') AND substr(b.start,1,10)=? ORDER BY b.start", (tenant, today.isoformat())).fetchall()
+    lines = [f"💇 Сегодня записей: {len(rows)}"]
+    lines += [f"   {t_} {svc}, {name}" for t_, svc, name in rows[:10]]
+    return lines
+
+
+core.register_daily("booking", daily_lines)
+core.register_stale("bookings", ("pending",), 15, "Запись")

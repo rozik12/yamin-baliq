@@ -199,10 +199,10 @@ class PlatformTests(unittest.TestCase):
         self.assertIn("недействительна", m.answer.call_args[0][0])
 
     def test_keyboards_by_role_and_module(self):
-        self.assertEqual(labels(CLI_A), ["💼 Вакансии", "📄 Мои отклики", "🌐 Язык"])
+        self.assertEqual(labels(CLI_A), ["💼 Вакансии", "📄 Мои отклики", "ℹ️ О нас", "👥 Пригласить друга", "🌐 Язык"])
         self.assertEqual(labels(ADM_A), [rec.ADM_CAND, rec.ADM_ADD, rec.ADM_JOBS, core.MORE_BTN])
         core.more_page.add(ADM_A)
-        self.assertEqual(labels(ADM_A), [rec.ADM_REPORT, core.STATS_BTN, core.EXPORT_BTN, core.LINK_BTN, core.STAFF_BTN, core.HELP_BTN, core.BACK_BTN])
+        self.assertEqual(labels(ADM_A), [rec.ADM_REPORT, core.SETTINGS_BTN, core.BROADCAST_BTN, core.STATS_BTN, core.EXPORT_BTN, core.LINK_BTN, core.STAFF_BTN, core.HELP_BTN, core.BACK_BTN])
         core.more_page.discard(ADM_A)
         self.assertIn(core.SPACES_BTN, labels(OWNER))
         self.assertNotIn(core.SPACES_BTN, labels(ADM_A))

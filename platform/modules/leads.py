@@ -185,3 +185,12 @@ def stats_lines(tenant):
 
 core.register_export("leads", "leads.csv", export_leads)
 core.register_stats("leads", stats_lines)
+
+
+def daily_lines(tenant, today):
+    n = db.execute("SELECT COUNT(*) FROM leads WHERE tenant=? AND status='new'", (tenant,)).fetchone()[0]
+    return [f"📝 Новых заявок без ответа: {n}"] if n else ["📝 Новых заявок без ответа нет ✅"]
+
+
+core.register_daily("leads", daily_lines)
+core.register_stale("leads", ("new",), 30, "Заявка")
