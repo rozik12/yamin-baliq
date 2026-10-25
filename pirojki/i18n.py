@@ -114,6 +114,10 @@ T = {
     "del_empty": {"ru": "За этот период записей нет — удалять нечего.", "uz": "Bu davrda yozuv yo'q — o'chiradigan narsa yo'q.", "en": "No records in this period — nothing to delete."},
     "del_done": {"ru": "🗑 Удалено записей: {n}", "uz": "🗑 O'chirilgan yozuvlar: {n}", "en": "🗑 Records deleted: {n}"},
     "del_notice": {"ru": "🗑 {who} удалил(а) {n} записей за {a} — {b}", "uz": "🗑 {who} {a} — {b} uchun {n} ta yozuvni o'chirdi", "en": "🗑 {who} deleted {n} records for {a} — {b}"},
+    "b_msg": {"ru": "📨 Сообщение админам", "uz": "📨 Adminlarga xabar", "en": "📨 Message admins"},
+    "msg_ask": {"ru": "Напишите сообщение для других админов (работники его не получат):", "uz": "Boshqa adminlar uchun xabar yozing (xodimlar olmaydi):", "en": "Write a message for the other admins (workers won't receive it):"},
+    "msg_from": {"ru": "📨 Сообщение от {who}:", "uz": "📨 {who} dan xabar:", "en": "📨 Message from {who}:"},
+    "msg_sent": {"ru": "✅ Отправлено админам: {n}", "uz": "✅ Adminlarga yuborildi: {n}", "en": "✅ Sent to admins: {n}"},
     "fallback": {"ru": "Нажмите кнопку внизу 👇", "uz": "Pastdagi tugmani bosing 👇", "en": "Tap a button below 👇"},
 }
 
