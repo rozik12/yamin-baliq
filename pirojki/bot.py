@@ -27,12 +27,19 @@ log = logging.getLogger("pirojki")
 _lang = {}
 
 
+# Кто может писать сообщения другим админам (кнопка есть только у него)
+ADMIN_MSG_FROM = {8219891075}
+
 # Личная приписка к кнопке «Сегодня» — только для этого администратора
 TODAY_NOTE = {6984514139: "Пожалуйста, не забудьте покормить Розикбека (Спасибо)"}
 
 
 class Add(StatesGroup):
     product = State()
+
+
+class Msg(StatesGroup):
+    text = State()
 
 
 class Stat(StatesGroup):
@@ -77,6 +84,8 @@ def menu(uid):
     if is_admin(uid):
         rows = [[k("b_made"), k("b_undo")], [k("b_today"), k("b_week"), k("b_month")], [k("b_stats"), k("b_stock")],
                 [k("b_workers"), k("b_products")], [k("b_invite"), k("b_export")], [k("b_delete"), k("b_lang")]]
+        if uid in ADMIN_MSG_FROM:
+            rows.insert(-1, [k("b_msg")])
     else:
         rows = [[k("b_sale"), k("b_made")], [k("b_mine"), k("b_undo")], [k("b_lang")]]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -501,6 +510,37 @@ async def delete_do(c: CallbackQuery):
             await c.bot.send_message(adm, tr(adm, "del_notice", who=uname(c.from_user), n=n, a=fd(a), b=fd(b - timedelta(days=1))))
         except Exception:
             pass
+
+
+# ---------- сообщение другим админам (не работникам)
+
+@router.message(F.text.in_(variants("b_msg")))
+async def msg_admins_ask(m: Message, state: FSMContext):
+    uid = m.from_user.id
+    if uid not in ADMIN_MSG_FROM:
+        return
+    await state.clear()
+    await state.set_state(Msg.text)
+    await m.answer(tr(uid, "msg_ask"))
+
+
+@router.message(Msg.text)
+async def msg_admins_send(m: Message, state: FSMContext):
+    uid = m.from_user.id
+    if uid not in ADMIN_MSG_FROM:
+        return
+    text = (m.text or "").strip()
+    if not text:
+        return await m.answer(tr(uid, "msg_ask"))
+    await state.clear()
+    sent = 0
+    for adm in ADMINS - {uid}:
+        try:
+            await m.bot.send_message(adm, tr(adm, "msg_from", who=uname(m.from_user)) + "\n\n" + text, parse_mode=None)
+            sent += 1
+        except Exception:
+            log.warning("admin message to %s failed", adm)
+    await m.answer(tr(uid, "msg_sent", n=sent), reply_markup=menu(uid))
 
 
 # ---------- работники
