@@ -65,9 +65,12 @@ async def say(chat_id: int, text: str):
     s["speaking"] = True
     step = RATE // 100 * 2  # 10 ms of 16-bit mono
     t = time.monotonic()
+    sent = 0
+    log.info("speaking: %s", text[:60])
     try:
         async for pcm in speak(text):
             pcm = upsample2(pcm)
+            sent += len(pcm)
             for i in range(0, len(pcm), step):
                 if chat_id not in sessions:
                     return
@@ -75,6 +78,7 @@ async def say(chat_id: int, text: str):
                 t += 0.01
                 await asyncio.sleep(max(0.0, t - time.monotonic()))
     finally:
+        log.info("done speaking: %.1f s of audio", sent / 2 / RATE)
         s["speaking"] = False
         s["utt"].reset()
 
@@ -113,10 +117,17 @@ async def ended(_, update):
     log.info("call ended %s", update.chat_id)
 
 
-@calls.on_update(filters.stream_frame(Direction.INCOMING, Device.SPEAKER))
+@calls.on_update(filters.stream_frame())
 async def frames(_, update: StreamFrames):
     s = sessions.get(update.chat_id)
-    if not s or s["speaking"]:
+    if not s:
+        return
+    s["seen"] = s.get("seen", 0) + 1
+    if s["seen"] <= 5:
+        f0 = update.frames[0].frame if update.frames else b""
+        log.info("frames update: dir=%s dev=%s n=%d first=%d bytes rms=%.0f speaking=%s",
+                 update.direction, update.device, len(update.frames), len(f0), rms(f0), s["speaking"])
+    if not (Direction.INCOMING & update.direction) or s["speaking"]:
         return
     for f in update.frames:
         s["n"] = s.get("n", 0) + 1
