@@ -9,7 +9,7 @@ from pytgcalls.types import (
     Frame, MediaStream, RecordStream, StreamFrames,
 )
 from aiohttp import web
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
 
@@ -17,7 +17,7 @@ import array
 import collections
 import time
 
-from brain import Brain
+from brain import Brain, SYSTEM_TEXT
 from vad import Utterance, rms
 from voice import speak
 
@@ -30,6 +30,7 @@ log = logging.getLogger("aicall")
 RATE = 48000  # Telegram calls run at 48 kHz; mono
 TTS_RATE = 24000  # both TTS engines return 24 kHz
 PARAMS = AudioParameters(RATE, 1)
+TEXT_CHAT = os.getenv("TEXT_CHAT", "1") != "0"
 BARGE_RMS = int(os.getenv("BARGE_RMS", "500"))
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()}
 
@@ -124,7 +125,7 @@ async def say(chat_id: int, text: str):
     await turn(chat_id, one(text))
 
 
-async def answer(chat_id: int, pcm: bytes):
+async def answer(chat_id: int, pcm):
     s = sessions.get(chat_id)
     if not s:
         return
@@ -139,6 +140,47 @@ async def start_session(chat_id: int):
     await calls.play(chat_id, MediaStream(ExternalMedia.AUDIO, audio_parameters=PARAMS))
     await calls.record(chat_id, RecordStream(True, PARAMS))
     log.info("call started with %s", chat_id)
+
+
+chats: dict[int, Brain] = {}
+hits: dict[int, collections.deque] = {}
+
+
+def under_limit(uid: int, per_hour: int = 30) -> bool:
+    q = hits.setdefault(uid, collections.deque())
+    now = time.monotonic()
+    while q and now - q[0] > 3600:
+        q.popleft()
+    if len(q) >= per_hour:
+        return False
+    q.append(now)
+    return True
+
+
+@tg.on(events.NewMessage(incoming=True))
+async def on_text(event):
+    """Typing: during a call the text is answered aloud; otherwise it is a text chat."""
+    try:
+        text = (event.raw_text or "").strip()
+        if not text or not event.is_private:
+            return
+        uid = event.sender_id
+        if ALLOWED and uid not in ALLOWED:
+            return
+        sender = await event.get_sender()
+        if getattr(sender, "bot", False):
+            return
+        if uid in sessions:
+            log.info("typed text during a call: %s", text[:60])
+            asyncio.create_task(answer(uid, text))
+            return
+        if not TEXT_CHAT or not under_limit(uid):
+            return
+        reply = await chats.setdefault(uid, Brain(RATE, SYSTEM_TEXT)).reply_text(text)
+        if reply:
+            await event.respond(reply)
+    except Exception:
+        log.exception("text handler failed")
 
 
 @calls.on_update(filters.chat_update(ChatUpdate.Status.INCOMING_CALL))
