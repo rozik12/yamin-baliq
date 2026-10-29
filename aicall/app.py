@@ -161,9 +161,13 @@ async def main():
             open(marker, "w").close()
         except OSError:
             pass
-        await start_session(peer)
-        if os.getenv("GREETING"):
-            await say(peer, os.environ["GREETING"])
+        try:
+            await start_session(peer)
+            if os.getenv("GREETING"):
+                await say(peer, os.environ["GREETING"])
+        except Exception as e:  # declined, unanswered, busy
+            sessions.pop(peer, None)
+            log.warning("outgoing call to %s did not connect: %s", target, e)
     await idle()
 
 
