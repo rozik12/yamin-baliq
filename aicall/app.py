@@ -17,6 +17,9 @@ from vad import Utterance
 from voice import speak
 
 logging.basicConfig(level=logging.INFO)
+# py-tgcalls remembers the loop it was created in, so create the loop first and run main() on it.
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 log = logging.getLogger("aicall")
 
 RATE = 24000  # AudioQuality.LOW = 24 kHz mono
@@ -151,11 +154,16 @@ async def main():
     me = await tg.get_me()
     log.info("logged in as %s (id %s); allowed: %s", me.first_name, me.id, ALLOWED or "anyone")
     target = os.getenv("CALL_USER_ID") or os.getenv("CALL_USERNAME")  # optional: call this user on startup
-    if target:
+    marker = SESSION_FILE + ".called"
+    if target and not os.path.exists(marker):  # call once, not on every restart
         peer = int(target) if target.lstrip("-").isdigit() else (await tg.get_entity(target.lstrip("@"))).id
+        try:
+            open(marker, "w").close()
+        except OSError:
+            pass
         await start_session(peer)
     await idle()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop.run_until_complete(main())
