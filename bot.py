@@ -38,9 +38,9 @@ LANGS = {"uz": "🇺🇿 O'zbekcha", "ru": "🇷🇺 Русский", "en": "�
 
 TXT = {
     "welcome": {
-        "ru": "Добро пожаловать в «{name}»! 🐟\nВыберите действие:",
-        "uz": "«{name}»ga xush kelibsiz! 🐟\nAmalni tanlang:",
-        "en": "Welcome to {name}! 🐟\nChoose an action:"},
+        "ru": "Добро пожаловать в «{name}»! {emoji}\nВыберите действие:",
+        "uz": "«{name}»ga xush kelibsiz! {emoji}\nAmalni tanlang:",
+        "en": "Welcome to {name}! {emoji}\nChoose an action:"},
     "pick_lang": {"ru": "Выберите язык", "uz": "Tilni tanlang", "en": "Choose your language"},
     "b_menu": {"ru": "🍽 Меню", "uz": "🍽 Menyu", "en": "🍽 Menu"},
     "b_cart": {"ru": "🛒 Корзина", "uz": "🛒 Savat", "en": "🛒 Cart"},
@@ -344,7 +344,7 @@ async def send_welcome(m: Message, uid):
         return await m.answer("🛠 Панель администратора. Новые заказы и чеки приходят сюда сообщениями с кнопками.\n"
                               "Команды: /orders /stats /stop /export /settings /broadcast /promo /admins",
                               reply_markup=main_kb(uid))
-    caption = t(uid, "welcome", name=INFO["name"])
+    caption = t(uid, "welcome", name=INFO["name"], emoji=INFO.get("emoji", "🐟"))
     logo = CDIR / "logo.jpg"
     if logo.exists():
         await m.answer_photo(FSInputFile(logo), caption=caption, reply_markup=main_kb(uid))

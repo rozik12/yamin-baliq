@@ -1,0 +1,241 @@
+{
+  "restaurant": {
+    "name": "Shabboda Kafe",
+    "emoji": "🍽",
+    "address": {
+      "ru": "г. Ташкент (адрес уточняется)",
+      "uz": "Toshkent sh. (manzil aniqlanadi)",
+      "en": "Tashkent (address to be confirmed)"
+    },
+    "phone": "+998 90 000 00 00",
+    "hours": {
+      "ru": "Ежедневно 10:00–23:00",
+      "uz": "Har kuni 10:00–23:00",
+      "en": "Daily 10:00–23:00"
+    },
+    "delivery_fee": 0,
+    "free_delivery_from": 0,
+    "min_order": 0,
+    "yandex": {
+      "pickup": {
+        "fullname": "г. Ташкент",
+        "lat": 41.311081,
+        "lon": 69.240562,
+        "phone": "+998900000000",
+        "contact_name": "Shabboda Kafe"
+      },
+      "taxi_class": "express",
+      "weight_kg": 3
+    },
+    "payment_methods": [
+      "pay_transfer"
+    ]
+  },
+  "categories": [
+    {
+      "id": "soups",
+      "name": {
+        "ru": "🍲 Первые блюда",
+        "uz": "🍲 Birinchi taomlar",
+        "en": "🍲 Soups"
+      },
+      "items": [
+        {
+          "id": "lagman",
+          "price": 35000,
+          "name": {
+            "ru": "Лагман",
+            "uz": "Lag'mon",
+            "en": "Lagman"
+          }
+        },
+        {
+          "id": "mastava",
+          "price": 32000,
+          "name": {
+            "ru": "Мастава",
+            "uz": "Mastava",
+            "en": "Mastava"
+          }
+        },
+        {
+          "id": "shurpa",
+          "price": 38000,
+          "name": {
+            "ru": "Шурпа",
+            "uz": "Sho'rva",
+            "en": "Shurpa"
+          }
+        }
+      ]
+    },
+    {
+      "id": "mains",
+      "name": {
+        "ru": "🍚 Горячие блюда",
+        "uz": "🍚 Issiq taomlar",
+        "en": "🍚 Main dishes"
+      },
+      "items": [
+        {
+          "id": "plov",
+          "price": 38000,
+          "name": {
+            "ru": "Плов",
+            "uz": "Palov",
+            "en": "Plov"
+          }
+        },
+        {
+          "id": "manty",
+          "price": 30000,
+          "name": {
+            "ru": "Манты",
+            "uz": "Manti",
+            "en": "Manti"
+          },
+          "desc": {
+            "ru": "5 шт",
+            "uz": "5 dona",
+            "en": "5 pcs"
+          }
+        },
+        {
+          "id": "dimlama",
+          "price": 45000,
+          "name": {
+            "ru": "Димлама",
+            "uz": "Dimlama",
+            "en": "Dimlama"
+          }
+        }
+      ]
+    },
+    {
+      "id": "kebab",
+      "name": {
+        "ru": "🍢 Шашлык",
+        "uz": "🍢 Shashlik",
+        "en": "🍢 Kebab"
+      },
+      "items": [
+        {
+          "id": "sh_lamb",
+          "price": 18000,
+          "name": {
+            "ru": "Шашлык из баранины",
+            "uz": "Qo'y go'shti shashlik",
+            "en": "Lamb kebab"
+          },
+          "desc": {
+            "ru": "1 шт",
+            "uz": "1 dona",
+            "en": "1 pc"
+          }
+        },
+        {
+          "id": "sh_chicken",
+          "price": 14000,
+          "name": {
+            "ru": "Шашлык куриный",
+            "uz": "Tovuq shashlik",
+            "en": "Chicken kebab"
+          },
+          "desc": {
+            "ru": "1 шт",
+            "uz": "1 dona",
+            "en": "1 pc"
+          }
+        },
+        {
+          "id": "lula",
+          "price": 15000,
+          "name": {
+            "ru": "Люля-кебаб",
+            "uz": "Lyulya-kabob",
+            "en": "Lula kebab"
+          },
+          "desc": {
+            "ru": "1 шт",
+            "uz": "1 dona",
+            "en": "1 pc"
+          }
+        }
+      ]
+    },
+    {
+      "id": "bakery",
+      "name": {
+        "ru": "🥟 Выпечка",
+        "uz": "🥟 Xamir ovqatlar",
+        "en": "🥟 Bakery"
+      },
+      "items": [
+        {
+          "id": "samsa",
+          "price": 12000,
+          "name": {
+            "ru": "Самса",
+            "uz": "Somsa",
+            "en": "Samsa"
+          }
+        },
+        {
+          "id": "cheburek",
+          "price": 15000,
+          "name": {
+            "ru": "Чебурек",
+            "uz": "Chebureki",
+            "en": "Cheburek"
+          }
+        }
+      ]
+    },
+    {
+      "id": "drinks",
+      "name": {
+        "ru": "🥤 Напитки",
+        "uz": "🥤 Ichimliklar",
+        "en": "🥤 Drinks"
+      },
+      "items": [
+        {
+          "id": "tea",
+          "price": 10000,
+          "name": {
+            "ru": "Чай (чайник)",
+            "uz": "Choy (choynak)",
+            "en": "Tea (pot)"
+          }
+        },
+        {
+          "id": "cola",
+          "price": 10000,
+          "name": {
+            "ru": "Кола 0,5",
+            "uz": "Kola 0,5",
+            "en": "Cola 0.5"
+          }
+        },
+        {
+          "id": "water",
+          "price": 5000,
+          "name": {
+            "ru": "Вода 0,5",
+            "uz": "Suv 0,5",
+            "en": "Water 0.5"
+          }
+        },
+        {
+          "id": "compote",
+          "price": 8000,
+          "name": {
+            "ru": "Компот",
+            "uz": "Kompot",
+            "en": "Compote"
+          }
+        }
+      ]
+    }
+  ]
+}
