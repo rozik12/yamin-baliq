@@ -14,6 +14,7 @@ from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
 
 import array
+import collections
 import time
 
 from brain import Brain
@@ -29,6 +30,7 @@ log = logging.getLogger("aicall")
 RATE = 48000  # Telegram calls run at 48 kHz; mono
 TTS_RATE = 24000  # both TTS engines return 24 kHz
 PARAMS = AudioParameters(RATE, 1)
+BARGE_RMS = int(os.getenv("BARGE_RMS", "1500"))
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()}
 
 SESSION_FILE = os.getenv("SESSION_FILE") or os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "aicall.session")
@@ -60,27 +62,64 @@ def upsample2(pcm: bytes) -> bytes:
     return out.tobytes()
 
 
-async def say(chat_id: int, text: str):
-    s = sessions[chat_id]
-    s["speaking"] = True
+async def synth(text: str) -> bytes:
+    """Text -> 48 kHz mono PCM, ready to send."""
+    pcm = b"".join([c async for c in speak(text)])
+    return await asyncio.to_thread(upsample2, pcm)
+
+
+async def play(chat_id: int, pcm: bytes) -> bool:
+    """Sends audio in paced 10 ms frames. False if the caller interrupted or hung up."""
+    s = sessions.get(chat_id)
     step = RATE // 100 * 2  # 10 ms of 16-bit mono
     t = time.monotonic()
-    sent = 0
-    log.info("speaking: %s", text[:60])
+    for i in range(0, len(pcm), step):
+        if not s or s["interrupt"] or chat_id not in sessions:
+            return False
+        await calls.send_frame(chat_id, Device.MICROPHONE, pcm[i : i + step])
+        t += 0.01
+        await asyncio.sleep(max(0.0, t - time.monotonic()))
+    return True
+
+
+async def turn(chat_id: int, sentences):
+    """One spoken turn: synthesizes sentence k+1 while sentence k is playing; the caller can interrupt."""
+    s = sessions.get(chat_id)
+    if not s:
+        return
+    s["speaking"], s["interrupt"], s["loud"] = True, False, 0
+    queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+
+    async def produce():
+        try:
+            async for sentence in sentences:
+                log.info("says: %s", sentence[:80])
+                await queue.put(await synth(sentence))
+        except Exception:
+            log.exception("synthesis failed")
+        finally:
+            await queue.put(None)
+
+    producer = asyncio.create_task(produce())
     try:
-        async for pcm in speak(text):
-            pcm = upsample2(pcm)
-            sent += len(pcm)
-            for i in range(0, len(pcm), step):
-                if chat_id not in sessions:
-                    return
-                await calls.send_frame(chat_id, Device.MICROPHONE, pcm[i : i + step])
-                t += 0.01
-                await asyncio.sleep(max(0.0, t - time.monotonic()))
+        while (pcm := await queue.get()) is not None:
+            if not await play(chat_id, pcm):
+                break
     finally:
-        log.info("done speaking: %.1f s of audio", sent / 2 / RATE)
+        producer.cancel()
         s["speaking"] = False
-        s["utt"].reset()
+        if s["interrupt"]:
+            log.info("interrupted by the caller")
+        else:
+            s["utt"].reset()
+
+
+async def one(text: str):
+    yield text
+
+
+async def say(chat_id: int, text: str):
+    await turn(chat_id, one(text))
 
 
 async def answer(chat_id: int, pcm: bytes):
@@ -88,16 +127,13 @@ async def answer(chat_id: int, pcm: bytes):
     if not s:
         return
     try:
-        text = await s["brain"].reply(pcm)
-        log.info("reply: %s", text)
-        if text:
-            await say(chat_id, text)
+        await turn(chat_id, s["brain"].reply_stream(pcm))
     except Exception:
         log.exception("answer failed")
 
 
 async def start_session(chat_id: int):
-    sessions[chat_id] = {"brain": Brain(RATE), "utt": Utterance(RATE), "speaking": False}
+    sessions[chat_id] = {"brain": Brain(RATE), "utt": Utterance(RATE), "speaking": False, "interrupt": False, "loud": 0, "ring": collections.deque(maxlen=25)}
     await calls.play(chat_id, MediaStream(ExternalMedia.AUDIO, audio_parameters=PARAMS))
     await calls.record(chat_id, RecordStream(True, PARAMS))
     log.info("call started with %s", chat_id)
@@ -127,9 +163,19 @@ async def frames(_, update: StreamFrames):
         f0 = update.frames[0].frame if update.frames else b""
         log.info("frames update: dir=%s dev=%s n=%d first=%d bytes rms=%.0f speaking=%s",
                  update.direction, update.device, len(update.frames), len(f0), rms(f0), s["speaking"])
-    if not (Direction.INCOMING & update.direction) or s["speaking"]:
+    if not (Direction.INCOMING & update.direction):
         return
     for f in update.frames:
+        if s["speaking"]:
+            # barge-in: 200 ms of clearly loud speech while the assistant talks stops it
+            s["ring"].append(f.frame)
+            s["loud"] = s["loud"] + 1 if rms(f.frame) >= BARGE_RMS else 0
+            if s["loud"] >= 20 and not s["interrupt"]:
+                s["interrupt"] = True
+                for old in s["ring"]:
+                    s["utt"].feed(old)
+                s["ring"].clear()
+            continue
         s["n"] = s.get("n", 0) + 1
         if s["n"] in (1, 200, 1000) or s["n"] % 1500 == 0:
             log.info("incoming frame #%d: %d bytes, rms %.0f", s["n"], len(f.frame), rms(f.frame))

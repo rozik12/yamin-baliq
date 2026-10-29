@@ -21,8 +21,8 @@ async def _gemini(text: str):
     pcm = b""
     for _ in range(3):  # the TTS model sometimes returns no audio
         resp = await client.aio.models.generate_content(
-            model=os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts"),
-            contents="Say in a friendly voice: " + text,
+            model=os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-lite-tts"),
+            contents="Say naturally, in a warm conversational tone: " + text,
             config=config,
         )
         parts = resp.candidates and resp.candidates[0].content and resp.candidates[0].content.parts

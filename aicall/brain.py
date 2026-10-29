@@ -1,18 +1,22 @@
-"""Gemini: audio in, short text reply out."""
+"""Gemini: audio in, a short spoken reply out, streamed sentence by sentence."""
 import io
 import os
+import re
 import wave
 
 from google import genai
 from google.genai import types
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 SYSTEM = os.getenv(
     "SYSTEM_PROMPT",
-    "Ты голосовой ассистент в телефонном звонке. Отвечай на языке собеседника, "
-    "коротко (1-2 предложения), без markdown, списков и эмодзи.",
+    "Ты голосовой ассистент и говоришь по телефону. Говори как живой человек: просто, тепло, "
+    "разговорно, короткими фразами (1-2 предложения), иногда с короткими вставками вроде "
+    "«ага», «понял», «хм». Отвечай на языке собеседника. Никакого markdown, списков, эмодзи и "
+    "сложных конструкций. Если не расслышал, переспроси одной фразой.",
 )
 MAX_TURNS = 12
+SENTENCE = re.compile(r"(.+?[.!?…]+)(?:\s|$)", re.S)
 
 
 def to_wav(pcm: bytes, rate: int) -> bytes:
@@ -26,20 +30,32 @@ def to_wav(pcm: bytes, rate: int) -> bytes:
 
 
 class Brain:
-    def __init__(self, rate=24000):
+    def __init__(self, rate=48000):
         self.client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
         self.rate = rate
         self.history: list[types.Content] = []
 
-    async def reply(self, pcm: bytes) -> str:
+    async def reply_stream(self, pcm: bytes):
+        """Yields the reply one sentence at a time, as soon as each is complete."""
         audio = types.Part.from_bytes(data=to_wav(pcm, self.rate), mime_type="audio/wav")
         self.history.append(types.Content(role="user", parts=[audio]))
-        resp = await self.client.aio.models.generate_content(
-            model=MODEL,
-            contents=self.history,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM),
-        )
-        text = (resp.text or "").strip()
-        self.history.append(types.Content(role="model", parts=[types.Part(text=text)]))
-        del self.history[: -MAX_TURNS * 2]
-        return text
+        said, buf = "", ""
+        try:
+            stream = await self.client.aio.models.generate_content_stream(
+                model=MODEL,
+                contents=self.history,
+                config=types.GenerateContentConfig(system_instruction=SYSTEM),
+            )
+            async for chunk in stream:
+                buf += chunk.text or ""
+                while (m := SENTENCE.match(buf)):
+                    sentence, buf = m.group(1).strip(), buf[m.end():]
+                    if sentence:
+                        said += sentence + " "
+                        yield sentence
+            if buf.strip():
+                said += buf.strip()
+                yield buf.strip()
+        finally:
+            self.history.append(types.Content(role="model", parts=[types.Part(text=said.strip() or "...")]))
+            del self.history[: -MAX_TURNS * 2]
