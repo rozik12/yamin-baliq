@@ -30,7 +30,7 @@ log = logging.getLogger("aicall")
 RATE = 48000  # Telegram calls run at 48 kHz; mono
 TTS_RATE = 24000  # both TTS engines return 24 kHz
 PARAMS = AudioParameters(RATE, 1)
-BARGE_RMS = int(os.getenv("BARGE_RMS", "1500"))
+BARGE_RMS = int(os.getenv("BARGE_RMS", "500"))
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()}
 
 SESSION_FILE = os.getenv("SESSION_FILE") or os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "aicall.session")
@@ -93,8 +93,10 @@ async def turn(chat_id: int, sentences):
     async def produce():
         try:
             async for sentence in sentences:
-                log.info("says: %s", sentence[:80])
-                await queue.put(await synth(sentence))
+                t0 = time.monotonic()
+                audio = await synth(sentence)
+                log.info("says (%.1fs audio, synthesized in %.1fs): %s", len(audio) / 2 / RATE, time.monotonic() - t0, sentence[:80])
+                await queue.put(audio)
         except Exception:
             log.exception("synthesis failed")
         finally:
@@ -167,10 +169,16 @@ async def frames(_, update: StreamFrames):
         return
     for f in update.frames:
         if s["speaking"]:
-            # barge-in: 200 ms of clearly loud speech while the assistant talks stops it
+            # barge-in: 150 ms of loud speech while the assistant talks stops it
+            level = rms(f.frame)
             s["ring"].append(f.frame)
-            s["loud"] = s["loud"] + 1 if rms(f.frame) >= BARGE_RMS else 0
-            if s["loud"] >= 20 and not s["interrupt"]:
+            s["maxr"] = max(s.get("maxr", 0), level)
+            s["cnt"] = s.get("cnt", 0) + 1
+            if s["cnt"] % 200 == 0:
+                log.info("while speaking: caller level max %.0f (barge-in at %d)", s["maxr"], BARGE_RMS)
+                s["maxr"] = 0
+            s["loud"] = s["loud"] + 1 if level >= BARGE_RMS else 0
+            if s["loud"] >= 15 and not s["interrupt"]:
                 s["interrupt"] = True
                 for old in s["ring"]:
                     s["utt"].feed(old)
