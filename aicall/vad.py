@@ -11,7 +11,7 @@ def rms(pcm: bytes) -> float:
 
 
 class Utterance:
-    def __init__(self, rate=24000, threshold=500, silence_s=0.9, min_s=0.4):
+    def __init__(self, rate=24000, threshold=300, silence_s=0.9, min_s=0.4):
         self.rate, self.threshold = rate, threshold
         self.silence_s, self.min_s = silence_s, min_s
         self.buf = bytearray()

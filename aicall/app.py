@@ -4,7 +4,7 @@ import os
 
 from pytgcalls import PyTgCalls, filters, idle
 from pytgcalls.types import (
-    AudioQuality, ChatUpdate, Device, Direction, ExternalMedia,
+    AudioParameters, ChatUpdate, Device, Direction, ExternalMedia,
     Frame, MediaStream, RecordStream, StreamFrames,
 )
 from aiohttp import web
@@ -12,8 +12,11 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
 
+import array
+import time
+
 from brain import Brain
-from vad import Utterance
+from vad import Utterance, rms
 from voice import speak
 
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +25,9 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 log = logging.getLogger("aicall")
 
-RATE = 24000  # AudioQuality.LOW = 24 kHz mono
+RATE = 48000  # Telegram calls run at 48 kHz; mono
+TTS_RATE = 24000  # both TTS engines return 24 kHz
+PARAMS = AudioParameters(RATE, 1)
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()}
 
 SESSION_FILE = os.getenv("SESSION_FILE") or os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "aicall.session")
@@ -43,16 +48,31 @@ calls = PyTgCalls(tg)
 sessions: dict[int, dict] = {}
 
 
+def upsample2(pcm: bytes) -> bytes:
+    """24 kHz -> 48 kHz mono 16-bit, linear interpolation."""
+    a = array.array("h", pcm[: len(pcm) // 2 * 2])
+    out = array.array("h", bytes(len(a) * 4))
+    for i, v in enumerate(a):
+        nxt = a[i + 1] if i + 1 < len(a) else v
+        out[2 * i] = v
+        out[2 * i + 1] = (v + nxt) // 2
+    return out.tobytes()
+
+
 async def say(chat_id: int, text: str):
     s = sessions[chat_id]
     s["speaking"] = True
+    step = RATE // 100 * 2  # 10 ms of 16-bit mono
+    t = time.monotonic()
     try:
         async for pcm in speak(text):
-            for i in range(0, len(pcm), 960):  # 20 ms
+            pcm = upsample2(pcm)
+            for i in range(0, len(pcm), step):
                 if chat_id not in sessions:
                     return
-                await calls.send_frame(chat_id, Device.MICROPHONE, pcm[i : i + 960])
-                await asyncio.sleep(0.019)
+                await calls.send_frame(chat_id, Device.MICROPHONE, pcm[i : i + step])
+                t += 0.01
+                await asyncio.sleep(max(0.0, t - time.monotonic()))
     finally:
         s["speaking"] = False
         s["utt"].reset()
@@ -73,8 +93,8 @@ async def answer(chat_id: int, pcm: bytes):
 
 async def start_session(chat_id: int):
     sessions[chat_id] = {"brain": Brain(RATE), "utt": Utterance(RATE), "speaking": False}
-    await calls.play(chat_id, MediaStream(ExternalMedia.AUDIO, audio_parameters=AudioQuality.LOW))
-    await calls.record(chat_id, RecordStream(True, AudioQuality.LOW))
+    await calls.play(chat_id, MediaStream(ExternalMedia.AUDIO, audio_parameters=PARAMS))
+    await calls.record(chat_id, RecordStream(True, PARAMS))
     log.info("call started with %s", chat_id)
 
 
@@ -98,8 +118,12 @@ async def frames(_, update: StreamFrames):
     if not s or s["speaking"]:
         return
     for f in update.frames:
+        s["n"] = s.get("n", 0) + 1
+        if s["n"] in (1, 200, 1000) or s["n"] % 1500 == 0:
+            log.info("incoming frame #%d: %d bytes, rms %.0f", s["n"], len(f.frame), rms(f.frame))
         done = s["utt"].feed(f.frame)
         if done:
+            log.info("heard an utterance: %.1f s", len(done) / 2 / RATE)
             asyncio.create_task(answer(update.chat_id, done))
 
 
