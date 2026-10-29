@@ -35,6 +35,16 @@ class Specs(unittest.TestCase):
         c = dict(run_clients.specs(env))["shabboda"]
         self.assertEqual((c["CARD_NUMBER"], c["CARD_HOLDER"]), ("9860", "Ali"))
 
+    def test_aicall_gets_only_its_own_vars(self):
+        env = dict(self.BASE, AICALL_TG_SESSION="S", AICALL_GEMINI_API_KEY="g", AICALL_TG_API_ID="1")
+        a = dict(run_clients.specs(env))["aicall"]
+        self.assertEqual((a["TG_SESSION"], a["GEMINI_API_KEY"], a["TG_API_ID"]), ("S", "g", "1"))
+        for k in ("BOT_TOKEN", "CARD_NUMBER", "DB_PATH", "ADMIN_CHAT_ID", "YANDEX_DELIVERY_TOKEN"):
+            self.assertNotIn(k, a)
+
+    def test_no_aicall_without_session(self):
+        self.assertNotIn("aicall", dict(run_clients.specs(self.BASE)))
+
 
 if __name__ == "__main__":
     unittest.main()

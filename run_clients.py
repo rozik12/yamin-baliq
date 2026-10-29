@@ -1,4 +1,5 @@
 """Запускает бота ресторана и, если задан SHABBODA_BOT_TOKEN, бота второго клиента в одном сервисе.
+Если задан AICALL_TG_SESSION, ещё и голосового ИИ для звонков в Telegram (aicall/, переменные AICALL_*).
 
 У второго бота свои база, токен, админы и карта: берутся из переменных SHABBODA_*;
 всё остальное из окружения первого (карта, курьеры, Яндекс, онлайн-оплата) ему не передаётся.
@@ -28,6 +29,11 @@ def specs(env=None):
             if env.get("SHABBODA_" + k):
                 e[k] = env["SHABBODA_" + k]
         out.append(("shabboda", e))
+    if env.get("AICALL_TG_SESSION"):
+        # Голосовой ИИ-аккаунт: ему не передаём ничего от ресторанных ботов, берём только AICALL_*.
+        e = {k: v for k, v in env.items() if k not in PER_CLIENT and not k.startswith(("SHABBODA_", "BOT_", "DB_", "ADMIN_"))}
+        e.update({k[len("AICALL_"):]: v for k, v in env.items() if k.startswith("AICALL_")})
+        out.append(("aicall", e))
     return out
 
 
@@ -53,7 +59,8 @@ def main():
                     if time.time() - last.get(name, 0) < 10:
                         time.sleep(5)
                 last[name] = time.time()
-                procs[name] = subprocess.Popen([sys.executable, "bot.py"], cwd=HERE, env=env)
+                script = os.path.join("aicall", "app.py") if name == "aicall" else "bot.py"
+                procs[name] = subprocess.Popen([sys.executable, script], cwd=HERE, env=env)
         time.sleep(3)
     for p in procs.values():
         try:
