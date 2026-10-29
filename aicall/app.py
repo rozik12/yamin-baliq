@@ -3,8 +3,9 @@ import logging
 import os
 
 from pytgcalls import PyTgCalls, filters, idle
+from pytgcalls.types.raw import AudioParameters
 from pytgcalls.types import (
-    AudioParameters, ChatUpdate, Device, Direction, ExternalMedia,
+    ChatUpdate, Device, Direction, ExternalMedia,
     Frame, MediaStream, RecordStream, StreamFrames,
 )
 from aiohttp import web
