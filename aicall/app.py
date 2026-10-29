@@ -153,8 +153,8 @@ async def main():
     await calls.start()
     me = await tg.get_me()
     log.info("logged in as %s (id %s); allowed: %s", me.first_name, me.id, ALLOWED or "anyone")
-    target = os.getenv("CALL_USER_ID") or os.getenv("CALL_USERNAME")  # optional: call this user on startup
-    marker = SESSION_FILE + ".called." + str(target).lstrip("@").lower()
+    target = os.getenv("CALL_USERNAME") or os.getenv("CALL_USER_ID")  # optional: call this user on startup
+    marker = SESSION_FILE + ".called." + str(target).lstrip("@").lower() + os.getenv("CALL_TAG", "")  # new CALL_TAG = call again
     if target and not os.path.exists(marker):  # call once, not on every restart
         peer = int(target) if target.lstrip("-").isdigit() else (await tg.get_entity(target.lstrip("@"))).id
         try:
