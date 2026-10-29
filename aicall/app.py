@@ -89,8 +89,10 @@ async def main():
     await calls.start()
     me = await tg.get_me()
     log.info("logged in as %s (id %s); allowed: %s", me.first_name, me.id, ALLOWED or "anyone")
-    if os.getenv("CALL_USER_ID"):  # optional: call this user on startup
-        await start_session(int(os.environ["CALL_USER_ID"]))
+    target = os.getenv("CALL_USER_ID") or os.getenv("CALL_USERNAME")  # optional: call this user on startup
+    if target:
+        peer = int(target) if target.lstrip("-").isdigit() else (await tg.get_entity(target.lstrip("@"))).id
+        await start_session(peer)
     await idle()
 
 
