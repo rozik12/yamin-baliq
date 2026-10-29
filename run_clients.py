@@ -22,7 +22,7 @@ def specs(env=None):
     if token:
         e = {k: v for k, v in env.items() if k not in PER_CLIENT}
         e.update(BOT_TOKEN=token, CLIENT=env.get("SHABBODA_CLIENT", "shabboda"),
-                 DB_PATH=env.get("SHABBODA_DB_PATH", "/data/shabboda.db"),
+                 DB_PATH=env.get("SHABBODA_DB_PATH") or os.path.join(env.get("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "shabboda.db"),
                  ADMIN_CHAT_ID=env.get("SHABBODA_ADMIN_CHAT_ID", "0"))
         for k in PER_CLIENT:
             if env.get("SHABBODA_" + k):

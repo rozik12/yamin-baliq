@@ -26,6 +26,10 @@ class Specs(unittest.TestCase):
         for k in ("CARD_NUMBER", "CARD_HOLDER", "COURIER_CHAT_ID", "YANDEX_DELIVERY_TOKEN"):
             self.assertNotIn(k, c)
 
+    def test_db_follows_volume_mount(self):
+        env = dict(self.BASE, SHABBODA_BOT_TOKEN="B", RAILWAY_VOLUME_MOUNT_PATH="/vol")
+        self.assertEqual(dict(run_clients.specs(env))["shabboda"]["DB_PATH"], "/vol/shabboda.db")
+
     def test_second_bot_own_card(self):
         env = dict(self.BASE, SHABBODA_BOT_TOKEN="B", SHABBODA_CARD_NUMBER="9860", SHABBODA_CARD_HOLDER="Ali")
         c = dict(run_clients.specs(env))["shabboda"]
