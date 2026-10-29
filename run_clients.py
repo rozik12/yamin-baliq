@@ -1,5 +1,5 @@
 """Запускает бота ресторана и, если задан SHABBODA_BOT_TOKEN, бота второго клиента в одном сервисе.
-Если задан AICALL_TG_SESSION, ещё и голосового ИИ для звонков в Telegram (aicall/, переменные AICALL_*).
+Если задан AICALL_TG_SESSION или AICALL_PHONE (первый вход), ещё и голосового ИИ для звонков в Telegram (aicall/, переменные AICALL_*).
 
 У второго бота свои база, токен, админы и карта: берутся из переменных SHABBODA_*;
 всё остальное из окружения первого (карта, курьеры, Яндекс, онлайн-оплата) ему не передаётся.
@@ -29,7 +29,7 @@ def specs(env=None):
             if env.get("SHABBODA_" + k):
                 e[k] = env["SHABBODA_" + k]
         out.append(("shabboda", e))
-    if env.get("AICALL_TG_SESSION"):
+    if env.get("AICALL_TG_SESSION") or env.get("AICALL_PHONE"):
         # Голосовой ИИ-аккаунт: ему не передаём ничего от ресторанных ботов, берём только AICALL_*.
         e = {k: v for k, v in env.items() if k not in PER_CLIENT and not k.startswith(("SHABBODA_", "BOT_", "DB_", "ADMIN_"))}
         e.update({k[len("AICALL_"):]: v for k, v in env.items() if k.startswith("AICALL_")})

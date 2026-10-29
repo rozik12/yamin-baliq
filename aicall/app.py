@@ -7,7 +7,9 @@ from pytgcalls.types import (
     AudioQuality, ChatUpdate, Device, Direction, ExternalMedia,
     Frame, MediaStream, RecordStream, StreamFrames,
 )
+from aiohttp import web
 from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
 
 from brain import Brain
@@ -20,7 +22,20 @@ log = logging.getLogger("aicall")
 RATE = 24000  # AudioQuality.LOW = 24 kHz mono
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()}
 
-tg = TelegramClient(StringSession(os.environ["TG_SESSION"]), int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"])
+SESSION_FILE = os.getenv("SESSION_FILE") or os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "aicall.session")
+
+
+def saved_session() -> str:
+    if os.getenv("TG_SESSION"):
+        return os.environ["TG_SESSION"]
+    try:
+        with open(SESSION_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+tg = TelegramClient(StringSession(saved_session()), int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"])
 calls = PyTgCalls(tg)
 sessions: dict[int, dict] = {}
 
@@ -85,7 +100,53 @@ async def frames(_, update: StreamFrames):
             asyncio.create_task(answer(update.chat_id, done))
 
 
+async def login():
+    """First sign-in without a console: Telegram sends a code to PHONE, and the code
+    (plus the 2FA password, if any) is delivered over HTTPS to /login/<LOGIN_SECRET>?code=...&password=..."""
+    phone, secret = os.environ["PHONE"], os.environ["LOGIN_SECRET"]
+    loop = asyncio.get_running_loop()
+    code_f, pw_f = loop.create_future(), loop.create_future()
+
+    async def handle(request):
+        if request.match_info["secret"] != secret:
+            return web.Response(status=404)
+        q = request.query
+        if "code" in q and not code_f.done():
+            code_f.set_result(q["code"].strip())
+        if "password" in q and not pw_f.done():
+            pw_f.set_result(q["password"])
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.add_routes([web.get("/login/{secret}", handle)])
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080"))).start()
+    try:
+        sent = await tg.send_code_request(phone)
+        log.info("login code sent to %s; waiting for it on /login/<secret>", phone)
+        code = await asyncio.wait_for(code_f, 600)
+        try:
+            await tg.sign_in(phone, code, phone_code_hash=sent.phone_code_hash)
+        except SessionPasswordNeededError:
+            log.info("2FA password required; waiting for it")
+            await tg.sign_in(password=await asyncio.wait_for(pw_f, 600))
+    finally:
+        await runner.cleanup()
+    try:
+        os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
+        with open(SESSION_FILE, "w") as f:
+            f.write(tg.session.save())
+        os.chmod(SESSION_FILE, 0o600)
+        log.info("login ok, session saved")
+    except OSError:
+        log.warning("login ok, but the session could not be saved: re-login needed after restart")
+
+
 async def main():
+    await tg.connect()
+    if not await tg.is_user_authorized():
+        await login()
     await calls.start()
     me = await tg.get_me()
     log.info("logged in as %s (id %s); allowed: %s", me.first_name, me.id, ALLOWED or "anyone")

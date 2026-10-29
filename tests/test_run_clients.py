@@ -42,6 +42,11 @@ class Specs(unittest.TestCase):
         for k in ("BOT_TOKEN", "CARD_NUMBER", "DB_PATH", "ADMIN_CHAT_ID", "YANDEX_DELIVERY_TOKEN"):
             self.assertNotIn(k, a)
 
+    def test_aicall_starts_for_first_login(self):
+        env = dict(self.BASE, AICALL_PHONE="+998", AICALL_LOGIN_SECRET="x")
+        a = dict(run_clients.specs(env))["aicall"]
+        self.assertEqual((a["PHONE"], a["LOGIN_SECRET"]), ("+998", "x"))
+
     def test_no_aicall_without_session(self):
         self.assertNotIn("aicall", dict(run_clients.specs(self.BASE)))
 
