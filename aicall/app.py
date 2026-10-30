@@ -77,6 +77,8 @@ async def play(chat_id: int, pcm: bytes) -> bool:
     for i in range(0, len(pcm), step):
         if not s or s["interrupt"] or chat_id not in sessions:
             return False
+        if s.get("since") is None:
+            s["since"] = time.monotonic()  # barge-in is armed only once audio is actually playing
         await calls.send_frame(chat_id, Device.MICROPHONE, pcm[i : i + step])
         t += 0.01
         await asyncio.sleep(max(0.0, t - time.monotonic()))
@@ -88,7 +90,7 @@ async def turn(chat_id: int, sentences):
     s = sessions.get(chat_id)
     if not s:
         return
-    s["speaking"], s["interrupt"], s["loud"] = True, False, 0
+    s["speaking"], s["interrupt"], s["loud"], s["since"] = True, False, 0, None
     queue: asyncio.Queue = asyncio.Queue(maxsize=2)
 
     async def produce():
@@ -223,7 +225,8 @@ async def frames(_, update: StreamFrames):
             if s["cnt"] % 200 == 0:
                 log.info("while speaking: caller level max %.0f (barge-in at %d)", s["maxr"], BARGE_RMS)
                 s["maxr"] = 0
-            s["loud"] = s["loud"] + 1 if level >= BARGE_RMS else 0
+            armed = s.get("since") is not None and time.monotonic() - s["since"] > 0.8
+            s["loud"] = s["loud"] + 1 if (armed and level >= BARGE_RMS) else 0
             if s["loud"] >= 15 and not s["interrupt"]:
                 s["interrupt"] = True
                 for old in s["ring"]:
