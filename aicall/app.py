@@ -315,11 +315,36 @@ async def login():
         log.warning("login ok, but the session could not be saved: re-login needed after restart")
 
 
+async def start_debug_server():
+    """DEBUG_AUDIO=1: GET /dbg/<LOGIN_SECRET>/in.wav returns the caller audio of the last call."""
+    import io, wave
+    import live
+
+    async def handle(request):
+        if request.match_info["secret"] != os.environ["LOGIN_SECRET"] or not live.LAST_IN:
+            return web.Response(status=404)
+        out = io.BytesIO()
+        with wave.open(out, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(RATE)
+            w.writeframes(live.LAST_IN)
+        return web.Response(body=out.getvalue(), content_type="audio/wav")
+
+    app_ = web.Application()
+    app_.add_routes([web.get("/dbg/{secret}/in.wav", handle)])
+    runner = web.AppRunner(app_, access_log=None)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080"))).start()
+
+
 async def main():
     await tg.connect()
     if not await tg.is_user_authorized():
         await login()
     await calls.start()
+    if os.getenv("DEBUG_AUDIO") == "1":
+        await start_debug_server()
     me = await tg.get_me()
     log.info("logged in as %s (id %s); allowed: %s", me.first_name, me.id, ALLOWED or "anyone")
     target = os.getenv("CALL_USERNAME") or os.getenv("CALL_USER_ID")  # optional: call this user on startup

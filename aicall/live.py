@@ -25,6 +25,8 @@ SYSTEM = os.getenv(
     "расслышал, переспроси одной фразой. Ты ИИ и не скрываешь этого, если спросят.",
 )
 FRAME = 960  # 10 ms of 48 kHz mono 16-bit
+DEBUG_AUDIO = os.getenv("DEBUG_AUDIO") == "1"
+LAST_IN = b""  # debug: what the caller's audio looked like on the last call (48 kHz mono)
 
 
 def down3(pcm: bytes) -> bytes:
@@ -74,6 +76,7 @@ class LiveCall:
         self.closed = False
         self.tasks: list[asyncio.Task] = []
         self._heard = self._said = ""
+        self.dbg = bytearray()
 
     async def start(self, opening: str | None = None):
         await self._connect()
@@ -100,6 +103,8 @@ class LiveCall:
         """Called for every incoming 10 ms frame from the caller."""
         if self.closed:
             return
+        if DEBUG_AUDIO and len(self.dbg) < 48000 * 2 * 90:
+            self.dbg += pcm48
         self.inbuf += down3(pcm48)
         if len(self.inbuf) >= 1600:  # 50 ms
             chunk, self.inbuf = bytes(self.inbuf), bytearray()
@@ -181,6 +186,9 @@ class LiveCall:
                 t = time.monotonic()
 
     async def close(self):
+        global LAST_IN
+        if DEBUG_AUDIO:
+            LAST_IN = bytes(self.dbg)
         self.closed = True
         for task in self.tasks:
             task.cancel()
