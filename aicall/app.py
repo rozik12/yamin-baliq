@@ -95,7 +95,11 @@ async def turn(chat_id: int, sentences):
         try:
             async for sentence in sentences:
                 t0 = time.monotonic()
-                audio = await synth(sentence)
+                try:
+                    audio = await synth(sentence)
+                except Exception:
+                    log.exception("synthesis failed, skipping this sentence")
+                    continue
                 log.info("says (%.1fs audio, synthesized in %.1fs): %s", len(audio) / 2 / RATE, time.monotonic() - t0, sentence[:80])
                 await queue.put(audio)
         except Exception:
