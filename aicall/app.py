@@ -18,6 +18,7 @@ import collections
 import time
 
 from brain import Brain, SYSTEM_TEXT
+from live import LiveCall
 from vad import Utterance, rms
 from voice import speak
 
@@ -31,6 +32,7 @@ RATE = 48000  # Telegram calls run at 48 kHz; mono
 TTS_RATE = 24000  # both TTS engines return 24 kHz
 PARAMS = AudioParameters(RATE, 1)
 TEXT_CHAT = os.getenv("TEXT_CHAT", "1") != "0"
+ENGINE = os.getenv("ENGINE", "live")  # "live" = Gemini Live speech-to-speech; "classic" = STT/LLM/TTS pipeline
 BARGE_RMS = int(os.getenv("BARGE_RMS", "500"))
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()}
 
@@ -141,11 +143,32 @@ async def answer(chat_id: int, pcm):
         log.exception("answer failed")
 
 
-async def start_session(chat_id: int):
-    sessions[chat_id] = {"brain": Brain(RATE), "utt": Utterance(RATE), "speaking": False, "interrupt": False, "loud": 0, "ring": collections.deque(maxlen=25)}
-    await calls.play(chat_id, MediaStream(ExternalMedia.AUDIO, audio_parameters=PARAMS))
+def opening(greeting: str | None) -> str | None:
+    if not greeting:
+        return None
+    return f"Звонок начался. Произнеси вслух ровно эту фразу и жди ответа собеседника: «{greeting}»"
+
+
+async def drop(chat_id: int):
+    s = sessions.pop(chat_id, None)
+    if s and s.get("live"):
+        await s["live"].close()
+
+
+async def start_session(chat_id: int, greeting: str | None = None):
+    live_call = None
+    if ENGINE == "live":
+        async def send(frame: bytes):
+            await calls.send_frame(chat_id, Device.MICROPHONE, frame)
+        live_call = LiveCall(send)
+    sessions[chat_id] = {"live": live_call, "brain": Brain(RATE), "utt": Utterance(RATE), "speaking": False, "interrupt": False, "loud": 0, "ring": collections.deque(maxlen=25)}
+    await calls.play(chat_id, MediaStream(ExternalMedia.AUDIO, audio_parameters=PARAMS))  # returns once the call is connected
     await calls.record(chat_id, RecordStream(True, PARAMS))
-    log.info("call started with %s", chat_id)
+    log.info("call started with %s (engine: %s)", chat_id, ENGINE)
+    if live_call:
+        await live_call.start(opening(greeting))
+    elif greeting:
+        asyncio.create_task(say(chat_id, greeting))
 
 
 chats: dict[int, Brain] = {}
@@ -178,7 +201,10 @@ async def on_text(event):
             return
         if uid in sessions:
             log.info("typed text during a call: %s", text[:60])
-            asyncio.create_task(answer(uid, text))
+            if sessions[uid].get("live"):
+                asyncio.create_task(sessions[uid]["live"].send_text(text))
+            else:
+                asyncio.create_task(answer(uid, text))
             return
         if not TEXT_CHAT or not under_limit(uid):
             return
@@ -194,12 +220,12 @@ async def incoming(_, update):
     if ALLOWED and update.chat_id not in ALLOWED:
         log.warning("rejected call from %s", update.chat_id)
         return
-    await start_session(update.chat_id)
+    await start_session(update.chat_id, os.getenv("INCOMING_GREETING", "Алло, слушаю вас."))
 
 
 @calls.on_update(filters.chat_update(ChatUpdate.Status.DISCARDED_CALL))
 async def ended(_, update):
-    sessions.pop(update.chat_id, None)
+    await drop(update.chat_id)
     log.info("call ended %s", update.chat_id)
 
 
@@ -214,6 +240,10 @@ async def frames(_, update: StreamFrames):
         log.info("frames update: dir=%s dev=%s n=%d first=%d bytes rms=%.0f speaking=%s",
                  update.direction, update.device, len(update.frames), len(f0), rms(f0), s["speaking"])
     if not (Direction.INCOMING & update.direction):
+        return
+    if s.get("live"):
+        for f in update.frames:
+            s["live"].feed(f.frame)
         return
     for f in update.frames:
         if s["speaking"]:
@@ -301,11 +331,9 @@ async def main():
         except OSError:
             pass
         try:
-            await start_session(peer)
-            if os.getenv("GREETING"):
-                await say(peer, os.environ["GREETING"])
+            await start_session(peer, os.getenv("GREETING"))
         except Exception as e:  # declined, unanswered, busy
-            sessions.pop(peer, None)
+            await drop(peer)
             log.warning("outgoing call to %s did not connect: %s", target, e)
     await idle()
 
