@@ -4,6 +4,7 @@
 
 У второго бота свои база, токен, админы и карта: берутся из переменных SHABBODA_*;
 всё остальное из окружения первого (карта, курьеры, Яндекс, онлайн-оплата) ему не передаётся.
+Переменная RUN_ONLY (имена через запятую: main, shabboda, converter, aicall) оставляет работать только перечисленных.
 Упавший бот перезапускается, второй от этого не страдает.
 """
 import os
@@ -44,6 +45,9 @@ def specs(env=None):
             if env.get(k):
                 e[k] = env[k]
         out.append(("converter", e))
+    only = {x.strip() for x in env.get("RUN_ONLY", "").split(",") if x.strip()}
+    if only:  # например RUN_ONLY=converter: остальные боты не запускаются (данные и код остаются)
+        out = [(n, e) for n, e in out if n in only]
     return out
 
 

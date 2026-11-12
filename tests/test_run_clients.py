@@ -66,5 +66,19 @@ class ConverterSpec(unittest.TestCase):
         self.assertNotIn("converter", dict(run_clients.specs({"BOT_TOKEN": "A"})))
 
 
+class RunOnly(unittest.TestCase):
+    ENV = {"BOT_TOKEN": "A", "SHABBODA_BOT_TOKEN": "B", "CONVERTER_BOT_TOKEN": "C"}
+
+    def test_run_only_converter(self):
+        self.assertEqual([n for n, _ in run_clients.specs(dict(self.ENV, RUN_ONLY="converter"))], ["converter"])
+
+    def test_run_only_unset_runs_all(self):
+        self.assertEqual([n for n, _ in run_clients.specs(self.ENV)], ["main", "shabboda", "converter"])
+
+    def test_run_only_several(self):
+        names = [n for n, _ in run_clients.specs(dict(self.ENV, RUN_ONLY="main, converter"))]
+        self.assertEqual(names, ["main", "converter"])
+
+
 if __name__ == "__main__":
     unittest.main()
