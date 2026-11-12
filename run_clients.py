@@ -1,4 +1,5 @@
 """Запускает бота ресторана и, если задан SHABBODA_BOT_TOKEN, бота второго клиента в одном сервисе.
+Если задан CONVERTER_BOT_TOKEN, ещё и бот-конвертер документов (converter/).
 Если задан AICALL_TG_SESSION или AICALL_PHONE (первый вход), ещё и голосового ИИ для звонков в Telegram (aicall/, переменные AICALL_*).
 
 У второго бота свои база, токен, админы и карта: берутся из переменных SHABBODA_*;
@@ -34,6 +35,15 @@ def specs(env=None):
         e = {k: v for k, v in env.items() if k not in PER_CLIENT and not k.startswith(("SHABBODA_", "BOT_", "DB_", "ADMIN_"))}
         e.update({k[len("AICALL_"):]: v for k, v in env.items() if k.startswith("AICALL_")})
         out.append(("aicall", e))
+    if env.get("CONVERTER_BOT_TOKEN"):
+        # Бот-конвертер документов (converter/): токен, админы и база свои, остальное из окружения не передаём.
+        e = {k: v for k, v in env.items() if k not in PER_CLIENT and not k.startswith(("SHABBODA_", "BOT_", "DB_", "ADMIN_", "AICALL_", "CONVERTER_"))}
+        e.update(BOT_TOKEN=env["CONVERTER_BOT_TOKEN"], ADMIN_IDS=env.get("CONVERTER_ADMIN_IDS", "8219891075"),
+                 DB_PATH=env.get("CONVERTER_DB_PATH") or os.path.join(env.get("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "converter.db"))
+        for k in ("CONVERTER_MAX_MB", "CONVERTER_DAILY_LIMIT"):
+            if env.get(k):
+                e[k] = env[k]
+        out.append(("converter", e))
     return out
 
 
@@ -59,7 +69,7 @@ def main():
                     if time.time() - last.get(name, 0) < 10:
                         time.sleep(5)
                 last[name] = time.time()
-                script = os.path.join("aicall", "app.py") if name == "aicall" else "bot.py"
+                script = {"aicall": os.path.join("aicall", "app.py"), "converter": os.path.join("converter", "bot.py")}.get(name, "bot.py")
                 procs[name] = subprocess.Popen([sys.executable, script], cwd=HERE, env=env)
         time.sleep(3)
     for p in procs.values():

@@ -51,5 +51,20 @@ class Specs(unittest.TestCase):
         self.assertNotIn("aicall", dict(run_clients.specs(self.BASE)))
 
 
+class ConverterSpec(unittest.TestCase):
+    def test_converter_is_isolated(self):
+        env = {"BOT_TOKEN": "A", "CARD_NUMBER": "5614", "SHABBODA_BOT_TOKEN": "B", "ADMIN_CHAT_ID": "1",
+               "CONVERTER_BOT_TOKEN": "C", "RAILWAY_VOLUME_MOUNT_PATH": "/vol", "AICALL_API_KEY": "secret"}
+        s = dict(run_clients.specs(env))
+        c = s["converter"]
+        self.assertEqual((c["BOT_TOKEN"], c["DB_PATH"], c["ADMIN_IDS"]), ("C", "/vol/converter.db", "8219891075"))
+        for k in ("CARD_NUMBER", "SHABBODA_BOT_TOKEN", "ADMIN_CHAT_ID", "AICALL_API_KEY", "CONVERTER_BOT_TOKEN"):
+            self.assertNotIn(k, c)
+        self.assertEqual(s["main"]["BOT_TOKEN"], "A")
+
+    def test_no_converter_without_token(self):
+        self.assertNotIn("converter", dict(run_clients.specs({"BOT_TOKEN": "A"})))
+
+
 if __name__ == "__main__":
     unittest.main()
