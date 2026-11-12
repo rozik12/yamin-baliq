@@ -46,14 +46,14 @@ LANGS = {"ru": "🇷🇺 Русский", "uz": "🇺🇿 O'zbekcha", "en": "�
 T = {
     "pick": {"ru": "🌐 Выберите язык\nTilni tanlang\nChoose language"},
     "hi": {
-        "ru": "👋 Я конвертирую документы.\n\nПришлите файл (PDF, Word, Excel, CSV, TXT или картинку), выберите нужный формат и получите результат.\n\nПримеры:\n• PDF → Word или Excel\n• Word / Excel → PDF\n• старый .xls → .xlsx\n• фото → PDF\n\nФайлы нигде не сохраняются: после конвертации они удаляются.",
-        "uz": "👋 Men hujjatlarni konvertatsiya qilaman.\n\nFayl yuboring (PDF, Word, Excel, CSV, TXT yoki rasm), kerakli formatni tanlang va natijani oling.\n\nMisollar:\n• PDF → Word yoki Excel\n• Word / Excel → PDF\n• eski .xls → .xlsx\n• rasm → PDF\n\nFayllar saqlanmaydi: konvertatsiyadan keyin o'chiriladi.",
-        "en": "👋 I convert documents.\n\nSend a file (PDF, Word, Excel, CSV, TXT or an image), pick the format and get the result.\n\nExamples:\n• PDF → Word or Excel\n• Word / Excel → PDF\n• old .xls → .xlsx\n• photo → PDF\n\nFiles are not stored: they are deleted right after conversion."},
+        "ru": "👋 Я конвертирую документы.\n\nПришлите файл (PDF, Word, Excel, презентацию, книгу, картинку и др.), выберите нужный формат и получите результат.\n\nПримеры:\n• PDF → Word или Excel\n• Word / Excel → PDF\n• старые .doc, .xls, .ppt → новые\n• фото, SVG, HEIC → PDF или JPG\n• EPUB, FB2, DJVU и многое другое\n\nФайлы нигде не сохраняются: после конвертации они удаляются.",
+        "uz": "👋 Men hujjatlarni konvertatsiya qilaman.\n\nFayl yuboring (PDF, Word, Excel, taqdimot, kitob, rasm va boshqalar), kerakli formatni tanlang va natijani oling.\n\nMisollar:\n• PDF → Word yoki Excel\n• Word / Excel → PDF\n• eski .doc, .xls, .ppt → yangi\n• rasm, SVG, HEIC → PDF yoki JPG\n• EPUB, FB2, DJVU va boshqalar\n\nFayllar saqlanmaydi: konvertatsiyadan keyin o'chiriladi.",
+        "en": "👋 I convert documents.\n\nSend a file (PDF, Word, Excel, a presentation, an ebook, an image and more), pick the format and get the result.\n\nExamples:\n• PDF → Word or Excel\n• Word / Excel → PDF\n• old .doc, .xls, .ppt → new\n• photos, SVG, HEIC → PDF or JPG\n• EPUB, FB2, DJVU and more\n\nFiles are not stored: they are deleted right after conversion."},
     "choose": {"ru": "📄 {name}\nВ какой формат конвертировать?", "uz": "📄 {name}\nQaysi formatga o'tkazamiz?", "en": "📄 {name}\nWhich format do you need?"},
     "unsupported": {
-        "ru": "Этот формат ({ext}) я пока не умею. Могу: PDF, DOCX, XLSX, XLS, CSV, TXT, JPG, PNG, WEBP.",
-        "uz": "Bu formatni ({ext}) hozircha bilmayman. Men: PDF, DOCX, XLSX, XLS, CSV, TXT, JPG, PNG, WEBP bilan ishlayman.",
-        "en": "I can't handle this format ({ext}) yet. I work with: PDF, DOCX, XLSX, XLS, CSV, TXT, JPG, PNG, WEBP."},
+        "ru": "Формат ({ext}) пока не поддерживается.\n\nЯ принимаю: {formats}.",
+        "uz": "Format ({ext}) hozircha qo'llab-quvvatlanmaydi.\n\nMen qabul qilaman: {formats}.",
+        "en": "The format ({ext}) isn't supported yet.\n\nI accept: {formats}."},
     "too_big": {"ru": "Файл слишком большой. Максимум {mb} МБ.", "uz": "Fayl juda katta. Maksimum {mb} MB.", "en": "The file is too big. Maximum is {mb} MB."},
     "busy": {"ru": "⏳ Конвертирую…", "uz": "⏳ Konvertatsiya qilinmoqda…", "en": "⏳ Converting…"},
     "done": {"ru": "✅ Готово", "uz": "✅ Tayyor", "en": "✅ Done"},
@@ -66,9 +66,18 @@ T = {
 }
 T["pick"].update(uz=T["pick"]["ru"], en=T["pick"]["ru"])
 
-MIME_EXT = {"application/pdf": "pdf", "application/msword": "doc", "application/vnd.ms-excel": "xls",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx", "text/csv": "csv", "text/plain": "txt"}
+MIME_EXT = {
+    "application/pdf": "pdf", "application/msword": "doc", "application/vnd.ms-excel": "xls", "application/vnd.ms-powerpoint": "ppt",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.oasis.opendocument.text": "odt", "application/vnd.oasis.opendocument.spreadsheet": "ods",
+    "application/vnd.oasis.opendocument.presentation": "odp", "application/rtf": "rtf", "text/rtf": "rtf",
+    "text/csv": "csv", "text/plain": "txt", "text/html": "html", "text/markdown": "md", "application/epub+zip": "epub",
+    "application/x-fictionbook+xml": "fb2", "image/svg+xml": "svg", "image/heic": "heic", "image/heif": "heic",
+    "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp", "image/tiff": "tiff",
+    "image/vnd.djvu": "djvu", "image/x-djvu": "djvu", "application/vnd.ms-xpsdocument": "xps", "application/oxps": "xps",
+}
 
 
 def lang(uid):
@@ -187,7 +196,7 @@ async def offer(m: Message, file_id, name, ext, size):
         return await m.answer(tr(uid, "too_big", mb=MAX_MB))
     opts = converters.targets(ext)
     if not opts:
-        return await m.answer(tr(uid, "unsupported", ext=ext or "?"))
+        return await m.answer(tr(uid, "unsupported", ext=ext or "?", formats=", ".join(e.upper() for e in converters.supported_inputs())))
     token = remember(uid, file_id, name, ext)
     btns = [InlineKeyboardButton(text=f"➡️ {o.upper()}", callback_data=f"cv:{token}:{o}") for o in opts]
     rows = [btns[i:i + 3] for i in range(0, len(btns), 3)]

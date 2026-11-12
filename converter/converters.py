@@ -1,7 +1,8 @@
 """Конвертация документов между PDF, Word, Excel, CSV, TXT и картинками.
 
-Работает на чистом Python. Если на машине есть LibreOffice (`soffice`), он подключается сам:
-даёт качественнее Word/Excel → PDF и старые форматы (.doc, .ppt, .odt, .rtf, .ods ...).
+Основа на чистом Python (PDF, Word .docx, Excel, CSV, TXT, картинки). Если на машине есть
+LibreOffice, pandoc, rsvg-convert, ddjvu, xpstopdf, подключаются сами: старые форматы (.doc, .xls, .ppt),
+ODT/RTF/HTML/EPUB/FB2, презентации, SVG, DJVU, XPS. Недостающие шаги строятся цепочкой (DJVU → PDF → Word).
 """
 import csv
 import os
@@ -15,8 +16,6 @@ HERE = Path(__file__).resolve().parent
 MAX_ROWS = 20000
 MAX_PDF_PAGES = 60
 MAX_PIXELS = 40_000_000
-IMAGES = {"jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff"}
-LO_IN = {"doc", "docx", "odt", "rtf", "ppt", "pptx", "odp", "xls", "xlsx", "ods"}
 
 
 class ConvertError(Exception):
@@ -450,105 +449,407 @@ def pdf_to_png(src, out):
             z.writestr(f"page_{i + 1:02d}.png", doc[i].get_pixmap(dpi=120).tobytes("png"))
 
 
-# ---------- LibreOffice (необязательный)
+# ---------- внешние программы
 
-def lo_convert(src, dst_ext, outdir, timeout=120):
-    exe = soffice()
-    if not exe:
-        raise ConvertError("unsupported")
-    profile = Path(outdir) / "lo_profile"
-    cmd = [exe, f"-env:UserInstallation=file://{profile}", "--headless", "--convert-to", dst_ext, "--outdir", str(outdir), str(src)]
+def soffice():
+    return shutil.which("soffice") or shutil.which("libreoffice")
+
+
+def _run(cmd, timeout=120):
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
         raise ConvertError("bad_file", "timeout") from e
     except subprocess.CalledProcessError as e:
-        raise ConvertError("bad_file", e.stderr.decode("utf-8", "replace")[:200]) from e
-    res = Path(outdir) / (Path(src).stem + "." + dst_ext)
+        raise ConvertError("bad_file", e.stderr.decode("utf-8", "replace")[:300]) from e
+
+
+# LibreOffice: формат-вход → семейство; (семейство, формат-выход) → фильтр экспорта
+LO_FAMILY = {}
+for _f in ("doc docx docm dot dotx dotm odt ott rtf txt html"):
+    pass
+for _f in "doc docx docm dot dotx dotm odt ott rtf txt html".split():
+    LO_FAMILY[_f] = "writer"
+for _f in "xls xlsx xlsm xlsb xlt xltx ods ots csv tsv".split():
+    LO_FAMILY[_f] = "calc"
+for _f in "ppt pptx pptm pps ppsx pot potx odp otp".split():
+    LO_FAMILY[_f] = "impress"
+LO_OUT = {
+    "writer": {"pdf": "pdf:writer_pdf_Export", "docx": "docx:MS Word 2007 XML", "doc": "doc:MS Word 97", "odt": "odt:writer8",
+               "rtf": "rtf:Rich Text Format", "txt": "txt:Text (encoded):UTF8", "html": "html:XHTML Writer File:UTF8"},
+    "calc": {"pdf": "pdf:calc_pdf_Export", "xlsx": "xlsx:Calc MS Excel 2007 XML", "xls": "xls:MS Excel 97", "ods": "ods:calc8",
+             "csv": "csv:Text - txt - csv (StarCalc):59,34,76,1", "html": "html:HTML (StarCalc)"},
+    "impress": {"pdf": "pdf:impress_pdf_Export", "pptx": "pptx:Impress MS PowerPoint 2007 XML", "ppt": "ppt:MS PowerPoint 97",
+                "odp": "odp:impress8"},
+}
+LO_INFILTER = {"html": "HTML (StarWriter)", "txt": "Text (encoded):UTF8"}
+
+
+def lo_run(src, dst, outdir, timeout=120):
+    fam = LO_FAMILY[Path(src).suffix.lstrip(".").lower()]
+    src = Path(src)
+    profile = Path(outdir) / f"lo_profile_{os.getpid()}"
+    cmd = [soffice(), f"-env:UserInstallation=file://{profile}", "--headless"]
+    inf = LO_INFILTER.get(src.suffix.lstrip(".").lower())
+    if inf:
+        cmd.append(f"--infilter={inf}")
+    cmd += ["--convert-to", LO_OUT[fam][dst], "--outdir", str(outdir), str(src)]
+    _run(cmd, timeout)
+    shutil.rmtree(profile, ignore_errors=True)
+    ext = dst
+    res = Path(outdir) / f"{src.stem}.{ext}"
     if not res.exists():
         raise ConvertError("bad_file", "no output")
     return res
 
 
-# ---------- таблица возможностей и главная функция
+PANDOC_FMT = {"md": "markdown", "html": "html", "docx": "docx", "odt": "odt", "epub": "epub", "fb2": "fb2", "rst": "rst",
+              "tex": "latex", "txt": "plain", "rtf": "rtf"}
 
-BASE = {
-    "pdf": ["docx", "xlsx", "txt", "png"],
-    "docx": ["pdf", "xlsx", "txt"],
-    "xlsx": ["pdf", "docx", "csv"],
-    "xls": ["xlsx", "pdf", "docx", "csv"],
-    "csv": ["xlsx", "pdf", "docx"],
-    "txt": ["pdf", "docx"],
+
+def pandoc_run(src, dst, outdir, timeout=120):
+    src = Path(src)
+    sf = PANDOC_FMT[src.suffix.lstrip(".").lower()]
+    out = Path(outdir) / f"{src.stem}_pd.{dst}"
+    cmd = ["pandoc", "-f", sf, "-t", PANDOC_FMT[dst], "-o", str(out), str(src)]
+    if dst in ("epub", "fb2", "html", "docx", "odt"):
+        cmd += ["--metadata", f"title={src.stem[:80]}"]
+    if dst == "html":
+        cmd += ["--standalone", "--embed-resources"] if _pandoc_new() else ["--standalone", "--self-contained"]
+    _run(cmd, timeout)
+    return out
+
+
+def _pandoc_new():
+    try:
+        v = subprocess.run(["pandoc", "--version"], capture_output=True, text=True, timeout=10).stdout.split()[1]
+        return tuple(int(x) for x in v.split(".")[:2]) >= (2, 19)
+    except Exception:
+        return False
+
+
+def svg_run(src, dst, outdir):
+    out = Path(outdir) / f"{Path(src).stem}_svg.{dst}"
+    _run(["rsvg-convert", "-f", dst, "-o", str(out), str(src)])
+    return out
+
+
+def djvu_pdf(src, outdir):
+    out = Path(outdir) / f"{Path(src).stem}_dj.pdf"
+    _run(["ddjvu", "-format=pdf", str(src), str(out)], timeout=150)
+    return out
+
+
+def djvu_txt(src, outdir):
+    out = Path(outdir) / f"{Path(src).stem}_dj.txt"
+    _run(["djvutxt", str(src), str(out)])
+    if not out.exists() or not out.read_text(encoding="utf-8", errors="ignore").strip():
+        raise ConvertError("empty", "no text layer")
+    return out
+
+
+def xps_pdf(src, outdir):
+    out = Path(outdir) / f"{Path(src).stem}_xps.pdf"
+    _run(["xpstopdf", str(src), str(out)])
+    return out
+
+
+# ---------- нормализация форматов
+
+ALIAS = {"jpeg": "jpg", "jpe": "jpg", "tif": "tiff", "htm": "html", "markdown": "md", "heif": "heic", "oxps": "xps",
+         "djv": "djvu", "latex": "tex", "text": "txt"}
+IMG_IN = {"jpg", "png", "webp", "gif", "bmp", "tiff", "ico", "heic", "avif"}
+IMG_OUT = ["png", "jpg", "webp", "gif", "bmp", "tiff", "ico"]
+
+
+def canon(ext):
+    ext = (ext or "").lower().lstrip(".")
+    return ALIAS.get(ext, ext)
+
+
+# что предлагаем пользователю для каждого типа файла (порядок = порядок кнопок)
+OFFER = {
+    "doc": ["pdf", "docx", "doc", "odt", "rtf", "txt", "html", "epub", "xlsx"],
+    "text": ["pdf", "docx", "doc", "odt", "rtf", "txt", "html", "epub", "md"],
+    "sheet": ["pdf", "xlsx", "xls", "ods", "csv", "html", "docx"],
+    "pres": ["pdf", "pptx", "ppt", "odp", "png", "jpg"],
+    "pdf": ["docx", "doc", "odt", "rtf", "txt", "html", "xlsx", "png", "jpg", "epub"],
+    "ebook": ["pdf", "docx", "txt", "html", "epub", "fb2", "md", "odt"],
+    "image": ["pdf", "png", "jpg", "webp", "gif", "bmp", "tiff", "ico"],
+    "svg": ["png", "jpg", "pdf"],
+    "djvu": ["pdf", "png", "txt", "docx"],
+    "xps": ["pdf", "docx", "png"],
 }
-for _e in IMAGES:
-    BASE[_e] = ["pdf", "png", "jpg"]
-LO_EXTRA = {
-    "doc": ["docx", "pdf", "txt"], "odt": ["docx", "pdf"], "rtf": ["docx", "pdf"],
-    "ppt": ["pdf", "pptx"], "pptx": ["pdf"], "odp": ["pdf"], "ods": ["xlsx", "pdf"],
-}
+CATEGORY = {}
+for _e in "doc docx docm dot dotx dotm odt ott rtf".split():
+    CATEGORY[_e] = "doc"
+for _e in "txt html md rst tex".split():
+    CATEGORY[_e] = "text"
+for _e in "xls xlsx xlsm xlsb xlt xltx ods ots csv tsv".split():
+    CATEGORY[_e] = "sheet"
+for _e in "ppt pptx pptm pps ppsx pot potx odp otp".split():
+    CATEGORY[_e] = "pres"
+CATEGORY.update({"pdf": "pdf", "epub": "ebook", "fb2": "ebook", "svg": "svg", "djvu": "djvu", "xps": "xps"})
+for _e in IMG_IN:
+    CATEGORY[_e] = "image"
+
+
+# ---------- встроенные шаги (чистый Python)
+
+def _n_pdf_docx(src, outdir):
+    out = Path(outdir) / f"{Path(src).stem}_n.docx"
+    pdf_to_docx(src, out)
+    return out
+
+
+def _n(fn, ext, *pre):
+    def run(src, outdir):
+        out = Path(outdir) / f"{Path(src).stem}_n.{ext}"
+        fn(*pre, src, out) if pre else fn(src, out)
+        return out
+    return run
+
+
+def _pdf_images(fmt):
+    def run(src, outdir):
+        out = Path(outdir) / f"{Path(src).stem}_n.{fmt}"
+        pdf_to_images(src, out, fmt)
+        return out.with_suffix(".zip") if _is_zip(out) is False and out.with_suffix(".zip").exists() else out
+    return run
+
+
+def pdf_to_images(src, out, fmt):
+    doc = _open_pdf(src)
+    n = min(doc.page_count, MAX_PDF_PAGES)
+    if n == 1:
+        pix = doc[0].get_pixmap(dpi=140)
+        if fmt == "png":
+            pix.save(str(out))
+        else:
+            Path(out).write_bytes(pix.tobytes("jpg"))
+        return
+    zp = Path(out).with_suffix(".zip")
+    with zipfile.ZipFile(zp, "w", zipfile.ZIP_STORED) as z:
+        for i in range(n):
+            z.writestr(f"page_{i + 1:02d}.{fmt}", doc[i].get_pixmap(dpi=120).tobytes("png" if fmt == "png" else "jpg"))
+
+
+def pdf_to_html(src, out):
+    doc = _open_pdf(src)
+    html = "<meta charset='utf-8'>" + "<hr>".join(p.get_text("html") for p in doc)
+    Path(out).write_text(html, encoding="utf-8")
+
+
+def _from_sheets(loader_ext, fn):
+    def run(src, outdir):
+        out = Path(outdir) / f"{Path(src).stem}_n.{fn.__name__.split('_to_')[1]}"
+        fn(load_sheets(src, loader_ext), out)
+        return out
+    return run
+
+
+def _sheet_step(src_ext, dst):
+    fn = {"pdf": sheets_to_pdf, "docx": sheets_to_docx, "xlsx": sheets_to_xlsx, "csv": sheets_to_csv}[dst]
+
+    def run(src, outdir):
+        out = Path(outdir) / f"{Path(src).stem}_n.{dst}"
+        fn(load_sheets(src, src_ext), out)
+        if dst == "csv" and _is_zip(out):
+            return out.rename(out.with_suffix(".zip"))
+        return out
+    return run
+
+
+def _image_step(dst):
+    def run(src, outdir):
+        out = Path(outdir) / f"{Path(src).stem}_n.{dst}"
+        if dst == "pdf":
+            image_to_pdf(src, out)
+        else:
+            image_to_image(src, out, dst)
+        return out
+    return run
+
+
+def _register_heif():
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
+
+
+def image_to_image(src, out, fmt):
+    from PIL import Image
+    img = _open_image(src)
+    fmt = {"jpg": "JPEG", "png": "PNG", "webp": "WEBP", "gif": "GIF", "bmp": "BMP", "tiff": "TIFF", "ico": "ICO"}[fmt]
+    if fmt in ("JPEG", "BMP") and img.mode in ("RGBA", "LA", "P"):
+        rgba = img.convert("RGBA")
+        base = Image.new("RGB", rgba.size, "white")
+        base.paste(rgba, mask=rgba.split()[-1])
+        img = base
+    elif fmt in ("JPEG", "BMP"):
+        img = img.convert("RGB")
+    elif fmt == "ICO":
+        img.thumbnail((256, 256))
+    elif fmt == "GIF":
+        img = img.convert("P") if img.mode not in ("P", "L") else img
+    img.save(str(out), fmt)
+
+
+def _open_image(src):
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    _register_heif()
+    try:
+        img = Image.open(str(src))
+        img.load()
+    except Exception as e:
+        raise ConvertError("bad_file", str(e)) from e
+    return img
+
+
+# ---------- граф форматов: рёбра = (из, в) -> шаг; цепочки ищем по кратчайшему пути
+
+def build_edges():
+    """{(из, в): (стоимость, шаг(src, outdir) -> Path)} по доступным программам."""
+    E = {}
+
+    def add(a, b, step, cost=1):
+        E[(a, b)] = (cost, step)
+
+    # встроенные
+    add("pdf", "docx", _n_pdf_docx)
+    add("pdf", "txt", _n(pdf_to_txt, "txt"))
+    add("pdf", "xlsx", lambda s, o: _pdf_xlsx(s, o))
+    add("pdf", "html", _n(pdf_to_html, "html"))
+    add("pdf", "png", _pdf_images("png"))
+    add("pdf", "jpg", _pdf_images("jpg"))
+    add("docx", "pdf", _n(docx_to_pdf, "pdf"), 2)
+    add("docx", "xlsx", lambda s, o: _docx_xlsx(s, o))
+    add("docx", "txt", _n(docx_to_txt, "txt"))
+    for se in ("xlsx", "xls", "csv"):
+        for dst in ("pdf", "docx", "xlsx", "csv"):
+            if dst != se:
+                add(se, dst, _sheet_step(se, dst), 2 if dst == "pdf" else 1)
+    add("txt", "pdf", _n(text_to_pdf, "pdf"), 2)
+    add("txt", "docx", _n(text_to_docx, "docx"))
+    for ie in IMG_IN:
+        add(ie, "pdf", _image_step("pdf"))
+        for dst in IMG_OUT:
+            if dst != ie:
+                add(ie, dst, _image_step(dst))
+
+    lo = bool(soffice())
+    if lo:
+        for src, fam in LO_FAMILY.items():
+            for dst in LO_OUT[fam]:
+                if dst == src:
+                    continue
+                if (src, dst) in E and (src in ("csv", "txt") or dst == "csv"):
+                    continue  # у встроенных верная кодировка (cp1251) и все листы (zip) при нескольких листах
+                add(src, dst, (lambda d: lambda s, o: lo_run(s, d, o))(dst), 1)
+    if shutil.which("pandoc"):
+        for src in ("md", "html", "docx", "odt", "epub", "fb2", "rst", "tex"):
+            for dst in ("docx", "odt", "html", "epub", "fb2", "md", "rst", "tex", "txt"):
+                if dst != src and (src, dst) not in E:
+                    add(src, dst, (lambda d: lambda s, o: pandoc_run(s, d, o))(dst), 1 if src not in ("docx", "odt") else 2)
+        if (("md", "pdf")) not in E and lo:
+            pass
+    if shutil.which("rsvg-convert"):
+        add("svg", "png", lambda s, o: svg_run(s, "png", o))
+        add("svg", "pdf", lambda s, o: svg_run(s, "pdf", o))
+    if shutil.which("ddjvu"):
+        add("djvu", "pdf", djvu_pdf)
+    if shutil.which("djvutxt"):
+        add("djvu", "txt", djvu_txt)
+    if shutil.which("xpstopdf"):
+        add("xps", "pdf", xps_pdf)
+    return E
+
+
+def _pdf_xlsx(src, outdir):
+    out = Path(outdir) / f"{Path(src).stem}_n.xlsx"
+    sheets_to_xlsx(pdf_to_sheets(src), out)
+    return out
+
+
+def _docx_xlsx(src, outdir):
+    out = Path(outdir) / f"{Path(src).stem}_n.xlsx"
+    sheets_to_xlsx(docx_tables(src), out)
+    return out
+
+
+def find_path(src, dst, edges=None, max_steps=3):
+    """Кратчайшая цепочка форматов src → … → dst или None."""
+    edges = build_edges() if edges is None else edges
+    import heapq
+    best = {src: 0}
+    heap = [(0, 0, src, [])]
+    while heap:
+        cost, steps, cur, path = heapq.heappop(heap)
+        if cur == dst:
+            return path
+        if steps >= max_steps or cost > best.get(cur, 1e9):
+            continue
+        for (a, b), (c, _) in edges.items():
+            if a != cur or b in (p[1] for p in path) or b == src:
+                continue
+            # картинки из PDF — всегда в конце цепочки (при нескольких страницах это zip)
+            if cur in ("png", "jpg") and path and path[-1][0] == "pdf":
+                continue
+            nc = cost + c
+            if nc < best.get(b, 1e9):
+                best[b] = nc
+                heapq.heappush(heap, (nc, steps + 1, b, path + [(cur, b)]))
+    return None
+
+
+def supported_inputs():
+    """Какие форматы принимаем (по доступным программам)."""
+    edges = build_edges()
+    return sorted(e for e in CATEGORY if any(find_path(e, t, edges) for t in OFFER[CATEGORY[e]] if t != e))
 
 
 def targets(ext, lo=None):
-    ext = ext.lower().lstrip(".")
-    lo = bool(soffice()) if lo is None else lo
-    out = list(BASE.get(ext, []))
-    if lo:
-        for t in LO_EXTRA.get(ext, []):
-            if t not in out:
-                out.append(t)
-        if ext in ("docx", "xlsx") and "doc" not in out:
-            out += ["doc"] if ext == "docx" else ["xls"]
-    return [t for t in out if t != ext and not (ext in ("jpg", "jpeg") and t == "jpg")]
+    """Форматы, в которые можно превратить файл с таким расширением (по доступным программам)."""
+    ext = canon(ext)
+    cat = CATEGORY.get(ext)
+    if not cat:
+        return []
+    edges = build_edges()
+    return [t for t in OFFER[cat] if t != ext and find_path(ext, t, edges)]
 
 
 def convert(src, src_ext, dst_ext, outdir):
     """Конвертирует src в outdir и возвращает путь к результату."""
     src, outdir = Path(src), Path(outdir)
-    src_ext, dst_ext = src_ext.lower().lstrip("."), dst_ext.lower().lstrip(".")
-    if dst_ext not in targets(src_ext):
+    src_ext, dst_ext = canon(src_ext), canon(dst_ext)
+    edges = build_edges()
+    if CATEGORY.get(src_ext) is None or dst_ext not in OFFER[CATEGORY[src_ext]]:
         raise ConvertError("unsupported")
-    out = outdir / f"result.{dst_ext}"
-    lo = bool(soffice())
-
-    if src_ext in LO_EXTRA and src_ext not in BASE:  # doc, odt, rtf, ppt, ...
-        res = lo_convert(src, dst_ext, outdir)
-        return res
-    if lo and src_ext in ("docx", "xlsx", "xls") and dst_ext == "pdf":
-        try:
-            return lo_convert(src, "pdf", outdir)
-        except ConvertError:
-            pass  # откат на встроенный рендер
-    if lo and dst_ext in ("doc", "xls"):
-        return lo_convert(src, dst_ext, outdir)
-
-    if src_ext == "pdf":
-        {"docx": pdf_to_docx, "txt": pdf_to_txt, "png": pdf_to_png}.get(dst_ext, lambda s, o: sheets_to_xlsx(pdf_to_sheets(s), o))(src, out)
-        if dst_ext == "png" and _is_zip(out):
-            out = out.rename(outdir / "result.zip")
-    elif src_ext == "docx":
-        if dst_ext == "pdf":
-            docx_to_pdf(src, out)
-        elif dst_ext == "xlsx":
-            sheets_to_xlsx(docx_tables(src), out)
-        else:
-            docx_to_txt(src, out)
-    elif src_ext in ("xlsx", "xls", "csv"):
-        sheets = load_sheets(src, src_ext)
-        {"pdf": sheets_to_pdf, "docx": sheets_to_docx, "csv": sheets_to_csv, "xlsx": sheets_to_xlsx}[dst_ext](sheets, out)
-        if dst_ext == "csv" and _is_zip(out):
-            out = out.rename(outdir / "result.zip")
-    elif src_ext == "txt":
-        (text_to_pdf if dst_ext == "pdf" else text_to_docx)(src, out)
-    elif src_ext in IMAGES:
-        if dst_ext == "pdf":
-            image_to_pdf(src, out)
-        else:
-            image_to_image(src, out, "PNG" if dst_ext == "png" else "JPEG")
-    else:
+    path = find_path(src_ext, dst_ext, edges)
+    if not path:
         raise ConvertError("unsupported")
-    if not out.exists() or out.stat().st_size == 0:
-        raise ConvertError("bad_file", "empty output")
-    return out
+    cur = src
+    for i, (a, b) in enumerate(path):
+        step = edges[(a, b)][1]
+        stepdir = outdir / f"step{i}"
+        stepdir.mkdir(exist_ok=True)
+        if cur.suffix.lstrip(".").lower() != a:  # шаги определяют формат по расширению
+            alias = stepdir / f"in.{a}"
+            shutil.copy(cur, alias)
+            cur = alias
+        else:
+            alias = stepdir / f"in.{a}"
+            shutil.copy(cur, alias)
+            cur = alias
+        cur = Path(step(cur, stepdir))
+        if not cur.exists() or cur.stat().st_size == 0:
+            raise ConvertError("bad_file", "empty output")
+    final = outdir / f"result{cur.suffix}"
+    shutil.move(str(cur), final)
+    return final
 
 
 def _is_zip(p):

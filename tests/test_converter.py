@@ -138,12 +138,11 @@ class Conversions(Base):
 
 class Rules(Base):
     def test_targets(self):
-        self.assertEqual(cv.targets("pdf", lo=False), ["docx", "xlsx", "txt", "png"])
-        self.assertEqual(cv.targets("DOCX", lo=False), ["pdf", "xlsx", "txt"])
-        self.assertEqual(cv.targets("jpeg", lo=False), ["pdf", "png"])
-        self.assertEqual(cv.targets("doc", lo=False), [])
-        self.assertIn("docx", cv.targets("doc", lo=True))
-        self.assertEqual(cv.targets("exe", lo=True), [])
+        self.assertTrue({"docx", "xlsx", "txt", "png"} <= set(cv.targets("pdf")))
+        self.assertTrue({"pdf", "xlsx", "txt"} <= set(cv.targets("DOCX")))
+        self.assertTrue({"pdf", "png", "webp"} <= set(cv.targets("jpeg")))
+        self.assertNotIn("jpg", cv.targets("jpeg"))
+        self.assertEqual(cv.targets("exe"), [])
 
     def test_errors(self):
         bad = self.d / "bad.pdf"
@@ -171,6 +170,113 @@ class Rules(Base):
         r = subprocess.run([sys.executable, cli, str(t), "txt", "png", str(self.d)], capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
         self.assertTrue(r.stderr.startswith("unsupported"))
+
+
+def have(*tools):
+    import shutil
+    return all(shutil.which(t) for t in tools)
+
+
+@unittest.skipUnless(cv.soffice() and have("pandoc", "rsvg-convert", "ddjvu"), "нет LibreOffice/pandoc/rsvg/ddjvu")
+class Universal(Base):
+    """Много форматов: старые doc/xls/ppt, odt/rtf/html/epub/fb2, презентации, svg, djvu, heic."""
+
+    def lo(self, src, ext):
+        import subprocess
+        subprocess.run([cv.soffice(), "--headless", "--convert-to", ext, "--outdir", str(self.d), str(src)],
+                       check=True, capture_output=True, timeout=120)
+        return self.d / f"{Path(src).stem}.{ext}"
+
+    def zip_text(self, path):
+        z = zipfile.ZipFile(path)
+        return "".join(z.read(n).decode("utf-8", "ignore") for n in z.namelist() if n.endswith((".xml", ".xhtml", ".html")))
+
+    def test_word_family(self):
+        docx = self.make_docx()
+        doc = self.lo(docx, "doc")
+        out = cv.convert(doc, "doc", "docx", self.d)
+        import docx as dx
+        self.assertIn("Счёт-фактура", "".join(p.text for p in dx.Document(str(out)).paragraphs))
+        for dst in ("odt", "epub"):
+            self.assertIn("Счёт-фактура", self.zip_text(cv.convert(docx, "docx", dst, self.d)), dst)
+        self.assertIn("Счёт-фактура", cv.convert(doc, "doc", "html", self.d).read_text(encoding="utf-8"))
+        self.assertIn("Счёт-фактура", pdf_text(cv.convert(doc, "doc", "pdf", self.d)))
+        rtf = cv.convert(docx, "docx", "rtf", self.d)
+        self.assertTrue(rtf.read_bytes().startswith(b"{\\rtf"))
+        self.assertIn("Сумма 1 250 000", cv.convert(rtf, "rtf", "txt", self.d).read_text(encoding="utf-8"))
+
+    def test_excel_family(self):
+        import openpyxl
+        xlsx = self.make_xlsx()
+        xls = self.lo(xlsx, "xls")
+        ods = self.lo(xlsx, "ods")
+        out = cv.convert(xls, "xls", "xlsx", self.d)
+        self.assertEqual(openpyxl.load_workbook(out).worksheets[0]["A2"].value, "Самса")
+        self.assertIn("Самса", cv.convert(ods, "ods", "csv", self.d).read_text(encoding="utf-8-sig"))
+        self.assertTrue(cv.convert(xlsx, "xlsx", "xls", self.d).exists())
+        self.assertIn("Самса", pdf_text(cv.convert(xlsx, "xlsx", "pdf", self.d)))
+
+    def test_text_and_books(self):
+        md = self.d / "a.md"
+        md.write_text("# Заголовок\n\nТекст **жирный**\n", encoding="utf-8")
+        epub = cv.convert(md, "md", "epub", self.d)
+        self.assertIn("Заголовок", self.zip_text(epub))
+        fb2 = cv.convert(epub, "epub", "fb2", self.d)
+        self.assertIn("Заголовок", fb2.read_text(encoding="utf-8"))
+        self.assertIn("Заголовок", pdf_text(cv.convert(epub, "epub", "pdf", self.d)))
+        html = self.d / "a.html"
+        html.write_text("<html><meta charset='utf-8'><body><h1>Привет</h1></body></html>", encoding="utf-8")
+        self.assertIn("Привет", pdf_text(cv.convert(html, "html", "pdf", self.d)))
+        self.assertIn("Привет", cv.convert(html, "htm", "md", self.d).read_text(encoding="utf-8"))
+
+    def test_presentation(self):
+        try:
+            from pptx import Presentation
+        except ImportError:
+            self.skipTest("нет python-pptx")
+        p = Presentation()
+        s = p.slides.add_slide(p.slide_layouts[1])
+        s.shapes.title.text = "Привет"
+        p.save(self.d / "a.pptx")
+        self.assertIn("Привет", pdf_text(cv.convert(self.d / "a.pptx", "pptx", "pdf", self.d)))
+        ppt = cv.convert(self.d / "a.pptx", "pptx", "ppt", self.d)
+        self.assertIn("Привет", pdf_text(cv.convert(ppt, "ppt", "pdf", self.d)))
+        self.assertEqual(cv.convert(self.d / "a.pptx", "pptx", "png", self.d).read_bytes()[:4], b"\x89PNG")
+
+    def test_images_svg_heic_djvu(self):
+        from PIL import Image
+        svg = self.d / "a.svg"
+        svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="red"/></svg>')
+        png = cv.convert(svg, "svg", "png", self.d)
+        self.assertEqual(Image.open(png).size, (40, 30))
+        self.assertEqual(cv.convert(svg, "svg", "jpg", self.d).read_bytes()[:2], b"\xff\xd8")
+        try:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+            Image.new("RGB", (20, 20), "blue").save(self.d / "a.heic")
+            self.assertEqual(cv.convert(self.d / "a.heic", "heic", "jpg", self.d).read_bytes()[:2], b"\xff\xd8")
+        except ImportError:
+            pass
+        for dst in ("webp", "gif", "bmp", "tiff", "ico"):
+            self.assertTrue(cv.convert(self.d / "a.png" if (self.d / "a.png").exists() else png, "png", dst, self.d).exists(), dst)
+        if have("c44"):
+            import subprocess
+            Image.new("RGB", (60, 40), "green").save(self.d / "s.jpg")
+            subprocess.run(["c44", str(self.d / "s.jpg"), str(self.d / "s.djvu")], check=True, capture_output=True)
+            self.assertTrue(cv.convert(self.d / "s.djvu", "djvu", "pdf", self.d).read_bytes().startswith(b"%PDF"))
+
+    def test_pdf_to_other_word_formats(self):
+        pdf = self.make_pdf_with_table()
+        self.assertIn("Накладная", self.zip_text(cv.convert(pdf, "pdf", "odt", self.d)))
+        self.assertTrue(cv.convert(pdf, "pdf", "doc", self.d).read_bytes()[:4] == b"\xd0\xcf\x11\xe0")
+
+    def test_offered_targets(self):
+        for ext, must in {"doc": ["docx", "pdf"], "xls": ["xlsx", "csv"], "ppt": ["pdf", "pptx"], "epub": ["pdf", "fb2"],
+                          "svg": ["png"], "djvu": ["pdf"], "heic": ["jpg"], "pdf": ["docx", "doc", "odt", "xlsx", "png"]}.items():
+            got = cv.targets(ext)
+            for t in must:
+                self.assertIn(t, got, f"{ext}->{t}")
+        self.assertEqual(cv.targets("exe"), [])
 
 
 if __name__ == "__main__":

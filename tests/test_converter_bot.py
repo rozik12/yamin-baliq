@@ -58,6 +58,7 @@ class Flow(unittest.TestCase):
         m = self.msg()
         run(bot.offer(m, "f", "a.exe", "exe", 10))
         self.assertIn("exe", m.answer.call_args[0][0])
+        self.assertIn("PDF", m.answer.call_args[0][0])
         m = self.msg()
         run(bot.offer(m, "f", "a.pdf", "pdf", 999 * 1024 * 1024))
         self.assertIn(str(bot.MAX_MB), m.answer.call_args[0][0])
