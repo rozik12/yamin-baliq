@@ -466,8 +466,6 @@ def _run(cmd, timeout=120):
 
 # LibreOffice: формат-вход → семейство; (семейство, формат-выход) → фильтр экспорта
 LO_FAMILY = {}
-for _f in ("doc docx docm dot dotx dotm odt ott rtf txt html"):
-    pass
 for _f in "doc docx docm dot dotx dotm odt ott rtf txt html".split():
     LO_FAMILY[_f] = "writer"
 for _f in "xls xlsx xlsm xlsb xlt xltx ods ots csv tsv".split():
