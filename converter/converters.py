@@ -391,6 +391,8 @@ def _open_pdf(src):
 
 
 def pdf_to_docx(src, out):
+    if tesseract_ok() and not pdf_has_text(src):  # скан без текста: распознаём
+        return ocr_to_docx(src, out)
     doc = _open_pdf(src)
     pages = doc.page_count
     doc.close()
@@ -407,6 +409,8 @@ def pdf_to_docx(src, out):
 
 
 def pdf_to_txt(src, out):
+    if tesseract_ok() and not pdf_has_text(src):
+        return ocr_to_txt(src, out)
     doc = _open_pdf(src)
     text = "\n\n".join(p.get_text() for p in doc)
     if not text.strip():
@@ -415,6 +419,8 @@ def pdf_to_txt(src, out):
 
 
 def pdf_to_sheets(src):
+    if tesseract_ok() and not pdf_has_text(src):
+        return ocr_to_sheets(src)
     doc = _open_pdf(src)
     sheets = []
     for pi, page in enumerate(doc, 1):
@@ -447,6 +453,167 @@ def pdf_to_png(src, out):
     with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
         for i in range(n):
             z.writestr(f"page_{i + 1:02d}.png", doc[i].get_pixmap(dpi=120).tobytes("png"))
+
+
+# ---------- OCR (tesseract) и PDF-инструменты
+
+OCR_MAX_PAGES = 12
+MERGE_MAX_PAGES = 300
+_langs_cache = []
+
+
+def tesseract_ok():
+    return bool(shutil.which("tesseract"))
+
+
+def ocr_langs():
+    """rus+uzb+eng из установленных; если ничего нет — eng."""
+    if not _langs_cache:
+        have = set()
+        try:
+            out = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, timeout=20).stdout.split()
+            have = set(out)
+        except Exception:
+            pass
+        want = [l for l in os.environ.get("OCR_LANGS", "rus+uzb+eng").split("+") if l in have]
+        _langs_cache.append("+".join(want) or "eng")
+    return _langs_cache[0]
+
+
+def pdf_has_text(src):
+    doc = _open_pdf(src)
+    n = 0
+    for i, page in enumerate(doc):
+        if i >= 3:
+            break
+        n += len(page.get_text().strip())
+    return n > 20
+
+
+def _page_pngs(src, workdir):
+    """PNG-файлы страниц PDF (до OCR_MAX_PAGES) или одна картинка → PNG."""
+    src = Path(src)
+    outs = []
+    if src.suffix.lower() == ".pdf":
+        doc = _open_pdf(src)
+        if doc.page_count > OCR_MAX_PAGES:
+            raise ConvertError("many_pages", str(doc.page_count))
+        for i, page in enumerate(doc):
+            p = Path(workdir) / f"p{i + 1:03d}.png"
+            page.get_pixmap(dpi=200).save(str(p))
+            outs.append(p)
+    else:
+        img = _open_image(src).convert("RGB")
+        p = Path(workdir) / "p001.png"
+        img.save(str(p))
+        outs.append(p)
+    return outs
+
+
+def _tess_text(png):
+    r = subprocess.run(["tesseract", str(png), "stdout", "-l", ocr_langs(), "--psm", "3"], capture_output=True, timeout=120)
+    return r.stdout.decode("utf-8", "replace")
+
+
+def ocr_pages(src):
+    """Список текстов по страницам."""
+    import tempfile
+    if not tesseract_ok():
+        raise ConvertError("unsupported")
+    with tempfile.TemporaryDirectory() as wd:
+        pages = [_tess_text(p) for p in _page_pngs(src, wd)]
+    if not any(t.strip() for t in pages):
+        raise ConvertError("empty", "ocr found no text")
+    return pages
+
+
+def ocr_to_txt(src, out):
+    Path(out).write_text("\n\n".join(t.strip() for t in ocr_pages(src)), encoding="utf-8")
+
+
+def ocr_to_docx(src, out):
+    import docx
+    d = docx.Document()
+    for i, text in enumerate(ocr_pages(src)):
+        if i:
+            d.add_page_break()
+        for para in [p.strip() for p in text.split("\n\n") if p.strip()]:
+            d.add_paragraph(para.replace("\n", " "))
+    d.save(str(out))
+
+
+def ocr_to_sheets(src):
+    lines = [[ln.strip()] for t in ocr_pages(src) for ln in t.splitlines() if ln.strip()]
+    return [("Text", lines[:MAX_ROWS])]
+
+
+def ocr_searchable_pdf(src, out):
+    """PDF с невидимым текстовым слоем: можно искать и копировать текст."""
+    import tempfile
+    import pymupdf
+    if not tesseract_ok():
+        raise ConvertError("unsupported")
+    with tempfile.TemporaryDirectory() as wd:
+        result = pymupdf.open()
+        for png in _page_pngs(src, wd):
+            base = png.with_suffix("")
+            subprocess.run(["tesseract", str(png), str(base), "-l", ocr_langs(), "pdf"], capture_output=True, timeout=150, check=False)
+            pdf = base.with_suffix(".pdf")
+            if not pdf.exists():
+                raise ConvertError("bad_file", "tesseract failed")
+            with pymupdf.open(str(pdf)) as one:
+                result.insert_pdf(one)
+        result.save(str(out), garbage=3, deflate=True)
+
+
+def compress_pdf(src, out):
+    doc = _open_pdf(src)
+    try:
+        doc.rewrite_images(dpi_threshold=130, dpi_target=100, quality=65)
+    except Exception:
+        pass
+    doc.save(str(out), garbage=4, deflate=True, clean=True)
+    if Path(out).stat().st_size >= Path(src).stat().st_size:  # лучше не стало — отдаём как есть
+        shutil.copy(src, out)
+
+
+def split_pdf(src, out):
+    import pymupdf
+    doc = _open_pdf(src)
+    if doc.page_count > 150:
+        raise ConvertError("too_big", "pages")
+    zp = Path(out).with_suffix(".zip")
+    with zipfile.ZipFile(zp, "w", zipfile.ZIP_STORED) as z:
+        for i in range(doc.page_count):
+            one = pymupdf.open()
+            one.insert_pdf(doc, from_page=i, to_page=i)
+            z.writestr(f"page_{i + 1:03d}.pdf", one.tobytes(garbage=3, deflate=True))
+    return zp
+
+
+def merge_files(paths, out):
+    """Склеивает PDF и картинки в один PDF в заданном порядке."""
+    import pymupdf
+    import tempfile
+    res = pymupdf.open()
+    with tempfile.TemporaryDirectory() as wd:
+        for i, p in enumerate(paths):
+            p = Path(p)
+            ext = canon(p.suffix)
+            if ext == "pdf":
+                src = p
+            elif ext in IMG_IN:
+                src = Path(wd) / f"i{i}.pdf"
+                image_to_pdf(p, src)
+            else:
+                raise ConvertError("unsupported", ext)
+            with _open_pdf(src) as d:
+                res.insert_pdf(d)
+            if res.page_count > MERGE_MAX_PAGES:
+                raise ConvertError("too_big", "pages")
+    if res.page_count == 0:
+        raise ConvertError("empty")
+    res.save(str(out), garbage=3, deflate=True)
 
 
 # ---------- внешние программы
@@ -571,9 +738,9 @@ OFFER = {
     "text": ["pdf", "docx", "doc", "odt", "rtf", "txt", "html", "epub", "md"],
     "sheet": ["pdf", "xlsx", "xls", "ods", "csv", "html", "docx"],
     "pres": ["pdf", "pptx", "ppt", "odp", "png", "jpg"],
-    "pdf": ["docx", "doc", "odt", "rtf", "txt", "html", "xlsx", "png", "jpg", "epub"],
+    "pdf": ["docx", "doc", "odt", "rtf", "txt", "html", "xlsx", "png", "jpg", "epub", "compress", "split", "ocrpdf"],
     "ebook": ["pdf", "docx", "txt", "html", "epub", "fb2", "md", "odt"],
-    "image": ["pdf", "png", "jpg", "webp", "gif", "bmp", "tiff", "ico"],
+    "image": ["pdf", "ocrpdf", "txt", "docx", "png", "jpg", "webp", "gif", "bmp", "tiff", "ico"],
     "svg": ["png", "jpg", "pdf"],
     "djvu": ["pdf", "png", "txt", "docx"],
     "xps": ["pdf", "docx", "png"],
@@ -738,6 +905,15 @@ def build_edges():
             if dst != ie:
                 add(ie, dst, _image_step(dst))
 
+    add("pdf", "compress", _tool_step(compress_pdf, "pdf"))
+    add("pdf", "split", _tool_step(split_pdf, "zip"))
+    if tesseract_ok():
+        add("pdf", "ocrpdf", _tool_step(ocr_searchable_pdf, "pdf"))
+        for ie in IMG_IN:
+            add(ie, "ocrpdf", _tool_step(ocr_searchable_pdf, "pdf"))
+            add(ie, "txt", _tool_step(ocr_to_txt, "txt"))
+            add(ie, "docx", _tool_step(ocr_to_docx, "docx"))
+
     lo = bool(soffice())
     if lo:
         for src, fam in LO_FAMILY.items():
@@ -764,6 +940,14 @@ def build_edges():
     if shutil.which("xpstopdf"):
         add("xps", "pdf", xps_pdf)
     return E
+
+
+def _tool_step(fn, ext):
+    def run(src, outdir):
+        out = Path(outdir) / f"{Path(src).stem}_t.{ext}"
+        res = fn(src, out)
+        return Path(res) if res else out
+    return run
 
 
 def _pdf_xlsx(src, outdir):

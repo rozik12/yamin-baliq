@@ -279,5 +279,111 @@ class Universal(Base):
         self.assertEqual(cv.targets("exe"), [])
 
 
+@unittest.skipUnless(cv.tesseract_ok(), "нет tesseract")
+class Ocr(Base):
+    def make_scan(self, text="Привет мир Hello world"):
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGB", (1400, 300), "white")
+        f = ImageFont.truetype(str(Path(cv.__file__).parent / "fonts" / "DejaVuSans.ttf"), 64)
+        ImageDraw.Draw(img).text((40, 90), text, font=f, fill="black")
+        p = self.d / "scan.png"
+        img.save(p)
+        return p
+
+    def test_photo_to_text_and_word(self):
+        import docx
+        scan = self.make_scan()
+        txt = cv.convert(scan, "png", "txt", self.d).read_text(encoding="utf-8").lower()
+        self.assertIn("привет", txt)
+        self.assertIn("hello", txt)
+        d = docx.Document(str(cv.convert(scan, "png", "docx", self.d)))
+        self.assertIn("привет", " ".join(p.text for p in d.paragraphs).lower())
+
+    def test_searchable_pdf(self):
+        out = cv.convert(self.make_scan(), "png", "ocrpdf", self.d)
+        self.assertIn("привет", pdf_text(out).lower())
+
+    def test_scanned_pdf_falls_back_to_ocr(self):
+        pdf = self.d / "scan.pdf"
+        cv.image_to_pdf(self.make_scan(), pdf)
+        self.assertFalse(cv.pdf_has_text(pdf))
+        self.assertIn("привет", cv.convert(pdf, "pdf", "txt", self.d).read_text(encoding="utf-8").lower())
+        import docx
+        d = docx.Document(str(cv.convert(pdf, "pdf", "docx", self.d)))
+        self.assertIn("hello", " ".join(p.text for p in d.paragraphs).lower())
+
+    def test_empty_image_and_too_many_pages(self):
+        from PIL import Image
+        Image.new("RGB", (300, 300), "white").save(self.d / "blank.png")
+        with self.assertRaises(cv.ConvertError) as e:
+            cv.convert(self.d / "blank.png", "png", "txt", self.d)
+        self.assertEqual(e.exception.code, "empty")
+        import pymupdf
+        big = pymupdf.open()
+        for _ in range(cv.OCR_MAX_PAGES + 1):
+            big.new_page()
+        big.save(self.d / "big.pdf")
+        with self.assertRaises(cv.ConvertError) as e:
+            cv.ocr_pages(self.d / "big.pdf")
+        self.assertEqual(e.exception.code, "many_pages")
+
+
+class PdfTools(Base):
+    def make_big_pdf(self):
+        import pymupdf
+        from PIL import Image
+        import random
+        random.seed(1)
+        img = Image.effect_noise((1600, 1200), 80).convert("RGB")
+        png = self.d / "noise.png"
+        img.save(png)
+        doc = pymupdf.open()
+        for _ in range(2):
+            page = doc.new_page()
+            page.insert_image(page.rect, filename=str(png))
+        p = self.d / "big.pdf"
+        doc.save(p)
+        return p
+
+    def test_compress_makes_smaller(self):
+        src = self.make_big_pdf()
+        out = cv.convert(src, "pdf", "compress", self.d)
+        self.assertTrue(out.read_bytes().startswith(b"%PDF"))
+        self.assertLess(out.stat().st_size, src.stat().st_size)
+
+    def test_split_and_merge_roundtrip(self):
+        import pymupdf
+        src = self.make_big_pdf()
+        z = cv.convert(src, "pdf", "split", self.d)
+        self.assertEqual(z.suffix, ".zip")
+        names = sorted(zipfile.ZipFile(z).namelist())
+        self.assertEqual(names, ["page_001.pdf", "page_002.pdf"])
+        parts = []
+        for n in names:
+            pth = self.d / n
+            pth.write_bytes(zipfile.ZipFile(z).read(n))
+            parts.append(pth)
+        from PIL import Image
+        Image.new("RGB", (50, 50), "red").save(self.d / "x.jpg")
+        out = self.d / "merged.pdf"
+        cv.merge_files(parts + [self.d / "x.jpg"], out)
+        self.assertEqual(pymupdf.open(str(out)).page_count, 3)
+
+    def test_merge_rejects_other_formats_and_cli(self):
+        import subprocess
+        t = self.d / "a.txt"
+        t.write_text("x", encoding="utf-8")
+        with self.assertRaises(cv.ConvertError):
+            cv.merge_files([t], self.d / "o.pdf")
+        cli = str(Path(cv.__file__).with_name("cli.py"))
+        from PIL import Image
+        Image.new("RGB", (30, 30), "blue").save(self.d / "b.png")
+        r = subprocess.run([sys.executable, cli, "merge", str(self.d / "m.pdf"), str(self.d / "b.png"), str(self.d / "b.png")],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        import pymupdf
+        self.assertEqual(pymupdf.open(str(self.d / "m.pdf")).page_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

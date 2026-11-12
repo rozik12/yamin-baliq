@@ -46,11 +46,13 @@ class Texts(unittest.TestCase):
 class Flow(unittest.TestCase):
     def setUp(self):
         bot._pending.clear()
+        bot._collect.clear()
         bot.db.execute("DELETE FROM usage")
 
-    def msg(self, uid=5):
+    def msg(self, uid=5, group=None):
         m = MagicMock()
         m.from_user = SimpleNamespace(id=uid)
+        m.media_group_id = group
         m.answer = AsyncMock()
         return m
 
@@ -64,41 +66,61 @@ class Flow(unittest.TestCase):
         self.assertIn(str(bot.MAX_MB), m.answer.call_args[0][0])
         self.assertEqual(bot._pending, {})
 
-    def test_offer_shows_targets(self):
+    def test_offer_shows_targets_with_special_buttons(self):
         m = self.msg()
         run(bot.offer(m, "f", "a.pdf", "pdf", 1000))
         kb = m.answer.call_args.kwargs["reply_markup"].inline_keyboard
         labels = [b.text for r in kb for b in r]
         self.assertIn("➡️ DOCX", labels)
-        self.assertIn("➡️ XLSX", labels)
+        self.assertIn(bot.T["lbl_compress"]["ru"], labels)
+        self.assertIn(bot.T["lbl_split"]["ru"], labels)
+        m = self.msg()
+        run(bot.offer(m, "f", "photo.jpg", "jpg", 1000))
+        labels = [b.text for r in m.answer.call_args.kwargs["reply_markup"].inline_keyboard for b in r]
+        if converters_tesseract():
+            self.assertIn("📝 TXT (OCR)", labels)
 
     def _callback(self, uid, token, dst, sample):
         c = MagicMock()
         c.from_user = SimpleNamespace(id=uid)
         c.data = f"cv:{token}:{dst}"
         c.answer = AsyncMock()
-        c.message.edit_text = AsyncMock()
+        status = MagicMock()
+        status.edit_text = AsyncMock()
+        status.delete = AsyncMock()
+        c.message.answer = AsyncMock(return_value=status)
         c.message.answer_document = AsyncMock()
+        c.message.edit_text = AsyncMock()
         c.message.delete = AsyncMock()
+        c.status = status
 
         async def download(file_id, destination):
             shutil.copy(sample, destination)
         c.bot.download = download
         return c
 
-    def test_full_conversion_and_limit(self):
+    def sample_docx(self, d):
         import docx
-        import tempfile
-        d = Path(tempfile.mkdtemp())
         sample = d / "s.docx"
         doc = docx.Document()
         doc.add_paragraph("Привет, мир")
         doc.save(sample)
+        return sample
+
+    def test_full_conversion_with_other_format_buttons_and_limit(self):
+        import tempfile
+        d = Path(tempfile.mkdtemp())
+        sample = self.sample_docx(d)
         token = bot.remember(5, "fid", "Договор.docx", "docx")
         c = self._callback(5, token, "pdf", sample)
         run(bot.convert_cb(c))
-        sent = c.message.answer_document.call_args[0][0]
-        self.assertEqual(sent.filename, "Договор.pdf")
+        args, kw = c.message.answer_document.call_args
+        self.assertEqual(args[0].filename, "Договор.pdf")
+        self.assertIn("Готово", kw["caption"])
+        labels = [b.text for r in kw["reply_markup"].inline_keyboard for b in r]
+        self.assertNotIn("➡️ PDF", labels)  # текущий формат не повторяем
+        self.assertIn("➡️ ODT", labels)
+        c.status.delete.assert_called_once()
         self.assertEqual(bot.used_today(5), 1)
         # чужой токен не работает
         c2 = self._callback(6, token, "pdf", sample)
@@ -118,6 +140,24 @@ class Flow(unittest.TestCase):
         c4.message.answer_document.assert_called_once()
         shutil.rmtree(d)
 
+    def test_compress_reports_shrink(self):
+        import pymupdf
+        import tempfile
+        from PIL import Image
+        d = Path(tempfile.mkdtemp())
+        Image.effect_noise((1600, 1200), 80).convert("RGB").save(d / "n.png")
+        doc = pymupdf.open()
+        pg = doc.new_page()
+        pg.insert_image(pg.rect, filename=str(d / "n.png"))
+        doc.save(d / "s.pdf")
+        token = bot.remember(5, "fid", "Отчёт.pdf", "pdf")
+        c = self._callback(5, token, "compress", d / "s.pdf")
+        run(bot.convert_cb(c))
+        args, kw = c.message.answer_document.call_args
+        self.assertEqual(args[0].filename, "Отчёт_compressed.pdf")
+        self.assertIn("−", kw["caption"])
+        shutil.rmtree(d)
+
     def test_bad_file_reports_error_and_cleans_up(self):
         import tempfile
         d = Path(tempfile.mkdtemp())
@@ -128,10 +168,57 @@ class Flow(unittest.TestCase):
         before = set(Path(tempfile.gettempdir()).glob("cv_*"))
         run(bot.convert_cb(c))
         c.message.answer_document.assert_not_called()
-        self.assertEqual(c.message.edit_text.call_args[0][0], bot.T["bad_file"]["ru"])
+        self.assertEqual(c.status.edit_text.call_args[0][0], bot.T["bad_file"]["ru"])
         self.assertEqual(set(Path(tempfile.gettempdir()).glob("cv_*")), before)
         self.assertEqual(bot.used_today(5), 0)
         shutil.rmtree(d)
+
+    def test_album_collects_and_merges(self):
+        import tempfile
+        import pymupdf
+        from PIL import Image
+        d = Path(tempfile.mkdtemp())
+        Image.new("RGB", (60, 40), "red").save(d / "a.jpg")
+
+        async def scenario():
+            m = self.msg(group="g1")
+            await bot.incoming(m, "f1", "photo.jpg", "jpg", 100)
+            await bot.incoming(m, "f2", "photo.jpg", "jpg", 100)
+            await bot.incoming(m, "f3", "photo.jpg", "jpg", 100)
+            await asyncio.sleep(1.2)
+            return m
+        m = run(scenario())
+        self.assertEqual(len(bot._collect[5]["items"]), 3)
+        self.assertEqual(m.answer.call_count, 1)  # один счётчик на весь альбом
+        c = self._callback(5, "x", "x", d / "a.jpg")
+        c.data = "mg:go"
+        run(bot.merge_go(c))
+        args, kw = c.message.answer_document.call_args
+        self.assertEqual(args[0].filename, "merged.pdf")
+        self.assertEqual(pymupdf.open(str(args[0].path)).page_count if Path(args[0].path).exists() else 3, 3)
+        self.assertNotIn(5, bot._collect)
+        shutil.rmtree(d)
+
+    def test_merge_mode_rules(self):
+        m = self.msg()
+        run(bot.merge_cmd(m))
+        self.assertIn(5, bot._collect)
+        run(bot.incoming(m, "f", "a.docx", "docx", 100))
+        self.assertEqual(m.answer.call_args[0][0], bot.T["merge_bad"]["ru"])
+        c = MagicMock()
+        c.from_user = SimpleNamespace(id=5)
+        c.answer = AsyncMock()
+        run(bot.merge_go(c))
+        c.answer.assert_called_once()
+        self.assertTrue(c.answer.call_args.kwargs.get("show_alert"))
+
+    def test_err_text_has_all_codes(self):
+        for code in ("bad_file", "empty", "too_big", "unsupported", "many_pages", "weird"):
+            self.assertTrue(bot.err_text(5, bot.converters.ConvertError(code)))
+
+
+def converters_tesseract():
+    return bot.converters.tesseract_ok()
 
 
 if __name__ == "__main__":
