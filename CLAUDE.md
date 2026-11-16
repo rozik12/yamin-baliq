@@ -2,6 +2,16 @@
 
 Владелец проекта — не разработчик, говорит по-русски. Он хочет, чтобы всё доводилось до конца без вопросов и лишних объяснений, а лимиты сессий расходовались экономно. Отвечай коротко, делай сам.
 
+## НОВЫЙ аккаунт Railway (с 17 ноября) — читать первым
+
+Старый аккаунт Railway остановлен (триал закончился), мой Railway MCP привязан к нему и не работает. Боты перенесены на НОВЫЙ аккаунт владельца (тоже пробный период, ограниченный кредит; когда закончится, нужен платный тариф Hobby ~5$/мес).
+- Проект `bots` a36b481a-0d89-4973-80fa-beb9d7126fa3, окружение production a25f2f07-7c9e-4eed-bcaa-3de2b6c486b0, сервис `bot` 24d30094-1073-4ce1-bd83-34bbbb625c3a, воркспейс 360773a9-6e76-4b5a-bcbd-ca05842b9aaa, диск `/data`. В сервисе работают два процесса: `converter` и `agzs` (`RUN_ONLY=converter,agzs`). Сервис собирается из `Dockerfile` в корне репозитория.
+- Доступ: ключ нового аккаунта сохранён в среде как секрет для хоста `backboard.railway.com` (его подставляет прокси, сам ключ мне не виден). Работать через GraphQL `https://backboard.railway.com/graphql/v2` (curl без заголовка Authorization) и Railway CLI с `RAILWAY_API_TOKEN=proxy-injected` (не задавать `RAILWAY_TOKEN`). Если запросы дают «Not Authorized», попросить новый ключ через `request_credential`.
+- GitHub этого аккаунта с репозиторием НЕ связан (`serviceConnect` отвечает «User does not have access to the repo»), поэтому деплой делается загрузкой кода: `cd /home/user/yamin-baliq && RAILWAY_API_TOKEN=proxy-injected railway up --detach -p a36b481a-0d89-4973-80fa-beb9d7126fa3 -e a25f2f07-7c9e-4eed-bcaa-3de2b6c486b0 -s 24d30094-1073-4ce1-bd83-34bbbb625c3a`. Статус: GraphQL `deployment(id:"...") { status }`, логи: `deploymentLogs(deploymentId:"...", limit:400) { message timestamp }` (сортировать по timestamp). Переменные: мутация `variableCollectionUpsert` (`skipDeploys: true`).
+- Токены ботов (`CONVERTER_BOT_TOKEN`, `AGZS_BOT_TOKEN`) лежат только в переменных Railway этого сервиса.
+- Один токен = один работающий бот: перед запуском локальной копии убедиться, что на Railway бот остановлен (иначе Telegram `Conflict`), и наоборот.
+- Всё ниже про старый аккаунт (ID сервисов, `connect-service-source`, MCP) устарело.
+
 ## Текущее состояние (важно)
 
 По просьбе владельца оставлен ТОЛЬКО бот-конвертер документов @buxgalterconverterbot (`converter/`, процесс `converter` в сервисе `bot`). Остальные боты выключены:
