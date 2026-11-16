@@ -107,5 +107,85 @@ class Parse(unittest.TestCase):
         self.assertEqual(calc.fnum(1250.5, 1), "1 250,5")
 
 
+
+class Analytics(unittest.TestCase):
+    def rows(self, fixed=0.0):
+        return calc.day_rows([SHIFT, dict(SHIFT, id=2, ts="t4", date="2026-11-11", m1s=1500, m1e=1800, m2s=2300, m2e=2300, arr_kg=0, arr_price=0)],
+                             {1: [50000]}, [OPEN], CFG, "2026-11-09", "2026-11-12", fixed_monthly=fixed)
+
+    def test_fixed_expenses_reduce_profit_daily(self):
+        base, fx = self.rows(0), self.rows(3_000_000)
+        daily = 3_000_000 / 30  # ноябрь
+        for b, f in zip(base, fx):
+            self.assertAlmostEqual(b["profit"] - f["profit"], daily, 4)
+            self.assertAlmostEqual(f["profit_pre_fixed"], b["profit"], 4)
+        self.assertAlmostEqual(calc.totals(fx)["fixed"], daily * 4, 4)
+
+    def test_compare_totals(self):
+        a, b = calc.totals(self.rows()[1:2]), calc.totals(self.rows()[2:3])
+        cmp = dict((n, (x, y, d, p)) for n, x, y, d, p in calc.compare_totals(a, b))
+        x, y, d, p = cmp["Выручка, сум"]
+        self.assertEqual((x, y, d), (2_000_000, 2_000_000, 0))
+        self.assertEqual(p, 0)
+        self.assertIsNone(dict((n, p) for n, _, _, _, p in calc.compare_totals(calc.totals([]), b))["Выручка, сум"])
+
+    def test_forecast_and_order(self):
+        rows = self.rows()
+        f = calc.forecast(rows, 1000)
+        self.assertGreater(f["avg_l"], 0)
+        self.assertAlmostEqual(f["days_left"], 1000 / f["avg_l"], 6)
+        self.assertIsNone(calc.forecast([], 1000)["days_left"])
+        kg, l = calc.order_suggestion(1000, 540, calc.cfg_of({"tank_capacity_l": 5000}), 500)
+        self.assertEqual(kg, 2200)  # (5000-1000) л × 0,54 = 2160 → округление до 100
+        self.assertAlmostEqual(l, 2200 / 0.54, 6)
+        kg2, _ = calc.order_suggestion(100, 54, calc.cfg_of({}), 400)
+        self.assertEqual(kg2, 1500)  # без ёмкости: 7 дней × 400 л × 0,54 ≈ 1512
+
+    def test_weekday_top_days_and_operators(self):
+        rows = self.rows()
+        w = calc.by_weekday(rows)
+        self.assertEqual(len(w), 7)
+        self.assertEqual(sum(x["days"] for x in w), 2)
+        best, worst = calc.top_days(rows, 1)
+        self.assertEqual(len(best), 1)
+        ops = calc.operator_stats([SHIFT, dict(SHIFT, id=2, user_name="Вали", cash=2_400_000, terminal=0, click=0, paynet=0)], {}, CFG)
+        names = [o["name"] for o in ops]
+        self.assertEqual(names[0], "Али")  # у Али недостача — он первый в списке
+        self.assertAlmostEqual(ops[0]["diff"], -400_000)
+        self.assertAlmostEqual(ops[1]["diff"], 0)
+
+    def test_reconcile_and_losses(self):
+        r = calc.reconcile(1000, 950, 800, 5)
+        self.assertEqual(r["diff"], -50)
+        self.assertAlmostEqual(r["pct"], -5.0)
+        self.assertAlmostEqual(r["allowed"], 40)
+        self.assertTrue(r["over_norm"])
+        self.assertFalse(calc.reconcile(1000, 970, 800, 5)["over_norm"])
+        self.assertFalse(calc.reconcile(1000, 1050, 800, 5)["over_norm"])  # излишек — не потеря
+        self.assertIsNone(calc.reconcile(1000, 950, 800, 0)["allowed"])
+        adjs = [{"date": "2026-11-01", "liters": 950, "expected_l": 1000}, {"date": "2026-11-05", "liters": 1100, "expected_l": 1000},
+                {"date": "2026-11-06", "liters": 500, "expected_l": None}]
+        self.assertEqual(calc.loss_total(adjs), (50, 100))
+        self.assertEqual(calc.loss_total(adjs, "2026-11-02"), (0, 100))
+        last = {"date": "2026-11-10", "ts": "t1.5", "id": 9, "liters": 1, "kg": 1}
+        self.assertEqual(calc.sold_since_last_adjustment([SHIFT], [last], CFG), 800)  # смена t2 после замера t1.5
+        self.assertEqual(calc.sold_since_last_adjustment([SHIFT], [dict(last, ts="t3")], CFG), 0)
+
+    def test_supplier_cash_forecast_unit(self):
+        bought, paid, debt = calc.supplier_balance([SHIFT], [{"amount": 2_000_000}])
+        self.assertEqual((bought, paid, debt), (5_000_000, 2_000_000, 3_000_000))
+        cash, spent, taken, left = calc.cash_on_hand([SHIFT], {1: [50000, 10000]}, [{"amount": 300_000}])
+        self.assertEqual((cash, spent, taken, left), (1_000_000, 60_000, 300_000, 640_000))
+        rows = self.rows()
+        mf = calc.month_forecast(rows, date(2026, 11, 12))
+        self.assertEqual(mf["total_days"], 30)
+        self.assertAlmostEqual(mf["profit_forecast"], mf["profit"] / 12 * 30, 6)
+        t = calc.totals(rows)
+        u = calc.unit_economics(t, 3_000_000, 4)
+        self.assertAlmostEqual(u["margin_l"], t["profit_pre_fixed"] / t["sold_l"], 6)
+        self.assertEqual(calc.month_bounds(2026, 2), ("2026-02-01", "2026-02-28"))
+        self.assertEqual(calc.prev_month(date(2026, 1, 15)), date(2025, 12, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -86,6 +86,19 @@ class Charts(unittest.TestCase):
         self.assertTrue(charts.render("stock", long_rows, calc.cfg_of(cfg), "всё время").startswith(b"\x89PNG"))
         self.assertEqual(charts.aggregate(rows)[1], "по дням")
 
+    def test_special_charts(self):
+        _, rows, cfg = sample_rows(14)
+        c = calc.cfg_of(cfg)
+        for kind in ("weekday", "structure"):
+            png = charts.render(kind, rows, c, "месяц")
+            self.assertTrue(png.startswith(b"\x89PNG"), kind)
+        pts = [{"date": "2026-11-01", "price": 5000, "kg": 1000}, {"date": "2026-11-05", "price": 5200, "kg": 900}]
+        self.assertGreater(len(charts.render("buy_price", rows, c, "всё время", pts)), 8000)
+        self.assertTrue(charts.render("buy_price", rows, c, "всё время", []).startswith(b"\x89PNG"))
+        self.assertTrue(charts.render("structure", [], c, "пусто").startswith(b"\x89PNG"))
+        fixed = calc.day_rows([], {}, [], c, "2026-11-01", "2026-11-03", fixed_monthly=3_000_000)
+        self.assertTrue(charts.render("expenses", fixed, c, "неделя").startswith(b"\x89PNG"))
+
     def test_chart_totals_match(self):
         _, rows, _ = sample_rows(3)
         agg, _ = charts.aggregate(rows)
@@ -98,7 +111,7 @@ class Excel(unittest.TestCase):
         db, rows, cfg = sample_rows(5)
         data = export.build_xlsx(rows, db.shifts(), db.expense_rows(), db.adjustments(), cfg)
         wb = openpyxl.load_workbook(io.BytesIO(data))
-        self.assertEqual(wb.sheetnames, ["Сводка по дням", "Смены", "Расходы", "Приход газа", "Корректировки остатка", "Настройки"])
+        self.assertEqual(wb.sheetnames, ["Сводка по дням", "Смены", "Расходы", "Приход газа", "Корректировки остатка", "Поставщик", "Инкассация", "Настройки"])
         ws = wb["Сводка по дням"]
         header = [c.value for c in ws[1]]
         for col in ("Дата", "Пролив счётчик 1, л", "Пролив всего, л", "Приход газа, кг", "Наличные", "Paynet QR", "НДС к уплате", "Акциз",
@@ -112,6 +125,23 @@ class Excel(unittest.TestCase):
         self.assertAlmostEqual(last["Чистая прибыль"], t["profit"], 4)
         self.assertEqual(wb["Смены"].max_row, 6)
         self.assertEqual(wb["Расходы"].max_row, 6)
+
+    def test_extra_sheets_and_columns(self):
+        import openpyxl
+        db, rows, cfg = sample_rows(3)
+        db.add_adjustment("2026-11-03", 900, 486, "замер", "Владелец", expected_l=1000, expected_kg=540)
+        db.add_supplier_payment("2026-11-02", 2_000_000, "оплата", "Владелец")
+        db.add_collection("2026-11-02", 500_000, "инкассация", "Владелец")
+        data = export.build_xlsx(rows, db.shifts(), db.expense_rows(), db.adjustments(), cfg, db.supplier_payments(), db.collections())
+        wb = openpyxl.load_workbook(io.BytesIO(data))
+        adj = [[c.value for c in r] for r in wb["Корректировки остатка"].iter_rows(min_row=2)]
+        self.assertIn([1000, -100], [r[3:5] for r in adj])
+        sup = [[c.value for c in r] for r in wb["Поставщик"].iter_rows(min_row=2)]
+        self.assertIn(-2_000_000, [r[2] for r in sup])
+        self.assertEqual(wb["Инкассация"]["B2"].value, 500_000)
+        header = [c.value for c in wb["Сводка по дням"][1]]
+        self.assertIn("Постоянные расходы (доля дня)", header)
+        self.assertIn("Статус", [c.value for c in wb["Смены"][1]])
 
     def test_empty_workbook(self):
         import openpyxl

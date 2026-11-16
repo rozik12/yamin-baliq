@@ -11,7 +11,8 @@ from matplotlib.ticker import FuncFormatter  # noqa: E402
 from calc import PAY_KEYS, PAY_NAMES, fnum  # noqa: E402
 
 GREEN, RED, BLUE, ORANGE, PURPLE, TEAL, GREY = "#2E9E5B", "#D64545", "#2F6FDE", "#F29F3D", "#8A5CD0", "#17A2A2", "#8C95A3"
-KINDS = {"sales": "Продажи (проливы)", "revenue": "Выручка", "expenses": "Расходы", "profit": "Чистая прибыль", "stock": "Остаток газа"}
+KINDS = {"sales": "Продажи (проливы)", "revenue": "Выручка", "expenses": "Расходы", "profit": "Чистая прибыль", "stock": "Остаток газа",
+         "weekday": "По дням недели", "structure": "Структура оплат", "buy_price": "Цена закупа газа"}
 MAX_DAILY_POINTS = 100
 
 
@@ -32,7 +33,7 @@ def aggregate(rows):
 
 def _merge(b):
     m = {"date": b[0]["date"], "m": [sum(x["m"][i] for x in b) for i in range(3)], "pay": {k: sum(x["pay"][k] for x in b) for k in PAY_KEYS}}
-    for k in ("sold_l", "revenue", "expenses", "purchase", "vat_net", "excise", "taxes", "gas_cost", "profit", "shifts", "arr_kg"):
+    for k in ("sold_l", "revenue", "expenses", "purchase", "vat_net", "excise", "taxes", "gas_cost", "profit", "shifts", "arr_kg", "fixed"):
         m[k] = sum(x[k] for x in b)
     m["tank_l"], m["tank_kg"] = b[-1]["tank_l"], b[-1]["tank_kg"]
     return m
@@ -81,10 +82,12 @@ def _stack(ax, rows, series):
     return bottom
 
 
-def render(kind, rows, cfg, period_label):
+def render(kind, rows, cfg, period_label, extra=None):
     """PNG-байты графика. rows — строки calc.day_rows."""
     if kind not in KINDS:
         raise ValueError(kind)
+    if kind in ("weekday", "structure", "buy_price"):
+        return _render_special(kind, rows, period_label, extra)
     rows, step = aggregate(rows)
     fig, ax = plt.subplots(figsize=(11, 6.2), dpi=110)
     fig.patch.set_facecolor("white")
@@ -105,7 +108,8 @@ def render(kind, rows, cfg, period_label):
         subtitle = f"Выручка: {fnum(sum(tot))} сум"
     elif kind == "expenses":
         tot = _stack(ax, rows, [("Закуп газа", [r["purchase"] for r in rows], BLUE), ("Расходы на месте", [r["expenses"] for r in rows], ORANGE),
-                                ("Налоги (НДС к уплате + акциз)", [max(r["taxes"], 0) for r in rows], PURPLE)])
+                                ("Налоги (НДС к уплате + акциз)", [max(r["taxes"], 0) for r in rows], PURPLE),
+                                ("Постоянные расходы", [r.get("fixed", 0.0) for r in rows], GREY)])
         _labels(ax, rows, tot, short)
         _fmt_axis(ax, "")
         subtitle = f"Закуп: {fnum(sum(r['purchase'] for r in rows))} · расходы: {fnum(sum(r['expenses'] for r in rows))} · налоги: {fnum(sum(max(r['taxes'], 0) for r in rows))} сум"
@@ -159,6 +163,75 @@ def render(kind, rows, cfg, period_label):
         ax.set_title(subtitle, fontsize=11, color="#444", pad=10)
     fig.text(0.99, 0.01, "Navro'z Propan Service", ha="right", fontsize=8, color=GREY)
     fig.tight_layout(rect=(0, 0.07 if kind in ('sales', 'revenue', 'expenses') else 0.02, 1, 0.96))
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def _render_special(kind, rows, period_label, extra):
+    """Графики не по дням: дни недели, структура оплат, история цены закупа."""
+    from calc import by_weekday, totals
+    fig, ax = plt.subplots(figsize=(11, 6.2), dpi=110)
+    fig.patch.set_facecolor("white")
+    subtitle = ""
+    if kind == "weekday":
+        w = by_weekday(rows)
+        x = range(7)
+        vals = [d["sold_l"] for d in w]
+        ax.bar(x, vals, color=[BLUE if d["days"] else "#DDE3EA" for d in w], width=0.65)
+        for i, d in enumerate(w):
+            if d["days"]:
+                ax.text(i, d["sold_l"], f"{fnum(d['sold_l'])} л\n{short(d['revenue'])}", ha="center", va="bottom", fontsize=9)
+        ax.set_xticks(list(x))
+        ax.set_xticklabels([f"{d['name']}\n({d['days']} дн.)" for d in w])
+        _fmt_axis(ax, " л")
+        live = [d for d in w if d["days"]]
+        if live:
+            best = max(live, key=lambda d: d["sold_l"])
+            worst = min(live, key=lambda d: d["sold_l"])
+            subtitle = f"Лучший день недели: {best['name']} ({fnum(best['sold_l'])} л), слабый: {worst['name']} ({fnum(worst['sold_l'])} л) — средний пролив за день"
+        step = "в среднем за день"
+    elif kind == "structure":
+        t = totals(rows)
+        names = [PAY_NAMES[k] for k in PAY_KEYS if t["pay"][k] > 0]
+        vals = [t["pay"][k] for k in PAY_KEYS if t["pay"][k] > 0]
+        colors = {"cash": GREEN, "terminal": BLUE, "click": ORANGE, "paynet": PURPLE}
+        if not vals:
+            ax.text(0.5, 0.5, "Нет данных об оплатах за период", ha="center", va="center", transform=ax.transAxes, fontsize=13)
+            ax.axis("off")
+        else:
+            total = sum(vals)
+            wedges, _ = ax.pie(vals, colors=[colors[k] for k in PAY_KEYS if t["pay"][k] > 0], startangle=90, counterclock=False,
+                               wedgeprops={"width": 0.42, "edgecolor": "white"})
+            ax.legend(wedges, [f"{n}: {fnum(v)} сум ({100 * v / total:.1f}%)" for n, v in zip(names, vals)], loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=11, frameon=False)
+            ax.text(0, 0, f"{short(total)}\nсум", ha="center", va="center", fontsize=15, fontweight="bold")
+            subtitle = f"Всего принято: {fnum(total)} сум"
+        step = "доли в выручке"
+    else:  # buy_price
+        pts = extra or []
+        if not pts:
+            ax.text(0.5, 0.5, "Нет приходов газа с ценой закупа", ha="center", va="center", transform=ax.transAxes, fontsize=13)
+            ax.axis("off")
+        else:
+            xs = list(range(len(pts)))
+            prices = [p["price"] for p in pts]
+            ax.plot(xs, prices, color=ORANGE, lw=2.4, marker="o", ms=6)
+            for i, p in enumerate(pts):
+                ax.text(i, p["price"], fnum(p["price"]), ha="center", va="bottom", fontsize=9)
+            ax.set_xticks(xs)
+            ax.set_xticklabels([f"{p['date'][8:10]}.{p['date'][5:7]}\n{fnum(p['kg'])} кг" for p in pts], fontsize=9)
+            _fmt_axis(ax, "")
+            avg = sum(prices) / len(prices)
+            ax.axhline(avg, color=GREY, ls="--", lw=1.2, label=f"Средняя {fnum(avg)}")
+            ax.legend(loc="upper left", fontsize=10)
+            subtitle = f"Последняя: {fnum(prices[-1])} · минимум {fnum(min(prices))} · максимум {fnum(max(prices))} сум/кг"
+        step = "по приходам"
+    fig.suptitle(f"{KINDS[kind]} · {period_label} ({step})", fontsize=15, fontweight="bold", y=0.985)
+    if subtitle:
+        ax.set_title(subtitle, fontsize=11, color="#444", pad=10)
+    fig.text(0.99, 0.01, "Navro'z Propan Service", ha="right", fontsize=8, color=GREY)
+    fig.tight_layout(rect=(0, 0.02, 1, 0.96))
     buf = io.BytesIO()
     fig.savefig(buf, format="png")
     plt.close(fig)

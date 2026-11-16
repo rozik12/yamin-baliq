@@ -24,7 +24,18 @@ class DB:
             cash REAL, terminal REAL, click REAL, paynet REAL, arr_kg REAL, arr_density REAL, arr_price REAL);
         CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, shift_id INTEGER, amount REAL, comment TEXT);
         CREATE TABLE IF NOT EXISTS adjustments(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, ts TEXT, liters REAL, kg REAL, note TEXT, user_name TEXT);
+        CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, user_name TEXT, action TEXT, details TEXT);
+        CREATE TABLE IF NOT EXISTS supplier_payments(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, ts TEXT, amount REAL, note TEXT, user_name TEXT);
+        CREATE TABLE IF NOT EXISTS collections(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, ts TEXT, amount REAL, note TEXT, user_name TEXT);
+        CREATE TABLE IF NOT EXISTS fixed_expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount REAL);
+        CREATE TABLE IF NOT EXISTS langs(id INTEGER PRIMARY KEY, lang TEXT);
         """)
+        for table, col, ddl in (("shifts", "status", "TEXT DEFAULT 'approved'"), ("shifts", "photos", "TEXT DEFAULT ''"), ("shifts", "arr_note", "TEXT DEFAULT ''"),
+                                ("adjustments", "expected_l", "REAL"), ("adjustments", "expected_kg", "REAL")):
+            try:
+                self.c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError:
+                pass  # колонка уже есть
 
     # --- роли
     def role_of(self, uid):
@@ -74,17 +85,38 @@ class DB:
         self.c.commit()
 
     # --- смены
-    def add_shift(self, uid, uname, d, expenses=()):
+    def add_shift(self, uid, uname, d, expenses=(), status="approved"):
         cur = self.c.execute(
-            "INSERT INTO shifts(date,ts,user_id,user_name,m1s,m1e,m2s,m2e,m3s,m3e,cash,terminal,click,paynet,arr_kg,arr_density,arr_price) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO shifts(date,ts,user_id,user_name,m1s,m1e,m2s,m2e,m3s,m3e,cash,terminal,click,paynet,arr_kg,arr_density,arr_price,status,photos,arr_note) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (d["date"], now().isoformat(timespec="microseconds"), uid, uname, d["m1s"], d["m1e"], d["m2s"], d["m2e"], d["m3s"], d["m3e"],
-             d["cash"], d["terminal"], d["click"], d["paynet"], d.get("arr_kg", 0), d.get("arr_density", 0), d.get("arr_price", 0)))
+             d["cash"], d["terminal"], d["click"], d["paynet"], d.get("arr_kg", 0), d.get("arr_density", 0), d.get("arr_price", 0),
+             status, ",".join(d.get("photos", [])), d.get("arr_note", "")))
         sid = cur.lastrowid
         for amount, comment in expenses:
             self.c.execute("INSERT INTO expenses(shift_id,amount,comment) VALUES(?,?,?)", (sid, amount, comment))
         self.c.commit()
         return sid
+
+    def update_shift(self, sid, d, expenses=(), status="approved"):
+        """Исправление смены владельцем: заменяет данные и расходы, дата ввода и автор остаются."""
+        self.c.execute(
+            "UPDATE shifts SET date=?,m1s=?,m1e=?,m2s=?,m2e=?,m3s=?,m3e=?,cash=?,terminal=?,click=?,paynet=?,arr_kg=?,arr_density=?,arr_price=?,"
+            "status=?,photos=?,arr_note=? WHERE id=?",
+            (d["date"], d["m1s"], d["m1e"], d["m2s"], d["m2e"], d["m3s"], d["m3e"], d["cash"], d["terminal"], d["click"], d["paynet"],
+             d.get("arr_kg", 0), d.get("arr_density", 0), d.get("arr_price", 0), status, ",".join(d.get("photos", [])), d.get("arr_note", ""), sid))
+        self.c.execute("DELETE FROM expenses WHERE shift_id=?", (sid,))
+        for amount, comment in expenses:
+            self.c.execute("INSERT INTO expenses(shift_id,amount,comment) VALUES(?,?,?)", (sid, amount, comment))
+        self.c.commit()
+
+    def set_status(self, sid, status):
+        n = self.c.execute("UPDATE shifts SET status=? WHERE id=?", (status, sid)).rowcount
+        self.c.commit()
+        return n
+
+    def expenses_of(self, sid):
+        return [(r["amount"], r["comment"]) for r in self.c.execute("SELECT amount, comment FROM expenses WHERE shift_id=? ORDER BY id", (sid,))]
 
     def shifts(self, start=None, end=None, uid=None):
         q, a = "SELECT * FROM shifts WHERE 1=1", []
@@ -124,10 +156,60 @@ class DB:
         return {1: r["m1e"], 2: r["m2e"], 3: r["m3e"]} if r else {}
 
     # --- корректировки остатка (начальный остаток, замеры)
-    def add_adjustment(self, date, liters, kg, note="", user_name=""):
-        self.c.execute("INSERT INTO adjustments(date,ts,liters,kg,note,user_name) VALUES(?,?,?,?,?,?)",
-                       (date, now().isoformat(timespec="microseconds"), liters, kg, note, user_name))
+    def add_adjustment(self, date, liters, kg, note="", user_name="", expected_l=None, expected_kg=None):
+        self.c.execute("INSERT INTO adjustments(date,ts,liters,kg,note,user_name,expected_l,expected_kg) VALUES(?,?,?,?,?,?,?,?)",
+                       (date, now().isoformat(timespec="microseconds"), liters, kg, note, user_name, expected_l, expected_kg))
         self.c.commit()
 
     def adjustments(self):
         return [dict(r) for r in self.c.execute("SELECT * FROM adjustments ORDER BY date, ts, id")]
+
+    # --- журнал, поставщик, инкассация, постоянные расходы, язык
+    def log(self, user_name, action, details=""):
+        self.c.execute("INSERT INTO audit(ts,user_name,action,details) VALUES(?,?,?,?)", (now().isoformat(timespec="seconds"), user_name, action, details))
+        self.c.commit()
+
+    def audit(self, limit=25):
+        return [dict(r) for r in self.c.execute("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def add_supplier_payment(self, date, amount, note="", user_name=""):
+        self.c.execute("INSERT INTO supplier_payments(date,ts,amount,note,user_name) VALUES(?,?,?,?,?)",
+                       (date, now().isoformat(timespec="microseconds"), amount, note, user_name))
+        self.c.commit()
+
+    def supplier_payments(self):
+        return [dict(r) for r in self.c.execute("SELECT * FROM supplier_payments ORDER BY date, id")]
+
+    def add_collection(self, date, amount, note="", user_name=""):
+        self.c.execute("INSERT INTO collections(date,ts,amount,note,user_name) VALUES(?,?,?,?,?)",
+                       (date, now().isoformat(timespec="microseconds"), amount, note, user_name))
+        self.c.commit()
+
+    def collections(self):
+        return [dict(r) for r in self.c.execute("SELECT * FROM collections ORDER BY date, id")]
+
+    def fixed_list(self):
+        return [dict(r) for r in self.c.execute("SELECT * FROM fixed_expenses ORDER BY id")]
+
+    def add_fixed(self, name, amount):
+        self.c.execute("INSERT INTO fixed_expenses(name,amount) VALUES(?,?)", (name, amount))
+        self.c.commit()
+
+    def remove_fixed(self, fid):
+        self.c.execute("DELETE FROM fixed_expenses WHERE id=?", (fid,))
+        self.c.commit()
+
+    def get_lang(self, uid):
+        r = self.c.execute("SELECT lang FROM langs WHERE id=?", (uid,)).fetchone()
+        return r["lang"] if r else "ru"
+
+    def set_lang(self, uid, lang):
+        self.c.execute("INSERT INTO langs(id,lang) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET lang=excluded.lang", (uid, lang))
+        self.c.commit()
+
+    def backup_to(self, path):
+        """Копия базы в файл (для ежедневной резервной копии владельцу)."""
+        dst = sqlite3.connect(path)
+        with dst:
+            self.c.backup(dst)
+        dst.close()
