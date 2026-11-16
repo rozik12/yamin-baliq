@@ -21,6 +21,11 @@ DEFAULTS = {
     "tax_due_day": 20.0,      # число месяца, до которого сдаются НДС и акциз (напоминание за 3 дня и в день срока)
     "auto_daily": 1.0,        # 1 = присылать владельцу итоги дня в 21:30 и недели по понедельникам
     "report_deadline": "21:00",  # до какого времени операторы должны сдать отчёт ("0" = не напоминать)
+    "plan_day_l": 0.0,        # дневная норма пролива, л (0 = не задана)
+    "plan_month_l": 0.0,      # план на месяц, литры
+    "plan_month_revenue": 0.0,  # план на месяц, выручка
+    "cash_alert_pct": 2.0,    # сообщать владельцу сразу, если касса расходится со счётчиками больше чем на столько процентов (0 = выключено)
+    "anomaly_pct": 40.0,      # пролив отличается от обычного больше чем на столько процентов — предупреждение (0 = выключено)
 }
 STR_KEYS = ("profit_mode", "report_deadline")
 PAY_KEYS = ("cash", "terminal", "click", "paynet")
@@ -47,7 +52,7 @@ def meters(s):
     return out
 
 
-def shift_calc(s, expenses, cfg):
+def shift_calc(s, expenses, cfg, sale_price=None):
     """Финансы одной смены. expenses — список сумм."""
     cfg = cfg_of(cfg) if "vat_rate" not in cfg else cfg
     m = meters(s)
@@ -65,7 +70,8 @@ def shift_calc(s, expenses, cfg):
     vat_in = purchase * r / (100 + r)
     excise = sold_l * cfg["excise_per_l"]
     exp_total = float(sum(expenses or []))
-    theory = sold_l * cfg["sale_price_l"] if cfg["sale_price_l"] > 0 else None
+    sp = cfg["sale_price_l"] if sale_price is None else sale_price  # цена продажи на дату смены (история цен)
+    theory = sold_l * sp if sp > 0 else None
     return {
         "liters": [x[2] for x in m], "sold_l": sold_l, "arr_kg": arr_kg, "arr_density": rho if arr_kg > 0 else 0.0, "arr_l": arr_l,
         "arr_price": price, "pay": pay, "revenue": revenue, "theory": theory,
@@ -106,14 +112,14 @@ def tank_run(shifts, adjustments, cfg):
     return per_shift, {"liters": liters, "kg": kg, "density": (kg / liters) if liters > 0 else cfg["default_density"]}, per_day
 
 
-def day_rows(shifts, expenses_by_shift, adjustments, cfg, start=None, end=None, fixed_monthly=0.0):
+def day_rows(shifts, expenses_by_shift, adjustments, cfg, start=None, end=None, fixed_monthly=0.0, price_at=None):
     """Строки по дням (с нулями для дней без смен) за [start, end] включительно (строки 'YYYY-MM-DD')."""
     cfg = cfg_of(cfg) if "vat_rate" not in cfg else cfg
     per_shift, _, per_day = tank_run(shifts, adjustments, cfg)
     by_day = {}
     last_price = cfg["price_buy_kg"]
     for s in sorted(shifts, key=lambda x: (x["date"], x.get("ts", ""), x["id"])):
-        sc = shift_calc(s, expenses_by_shift.get(s["id"], []), cfg)
+        sc = shift_calc(s, expenses_by_shift.get(s["id"], []), cfg, price_at(s["date"]) if price_at else None)
         if s.get("arr_kg") and s.get("arr_price"):
             last_price = float(s["arr_price"])
         d = by_day.setdefault(s["date"], {"date": s["date"], "shifts": 0, "m": [0.0, 0.0, 0.0], "sold_l": 0.0, "sold_kg": 0.0, "arr_kg": 0.0,
@@ -170,7 +176,7 @@ def day_rows(shifts, expenses_by_shift, adjustments, cfg, start=None, end=None, 
             else:
                 break
         d["tank_l"], d["tank_kg"] = last if last else (None, None)
-        d["diff"] = (d["revenue"] - d["theory"]) if (cfg["sale_price_l"] > 0 and d["sold_l"] > 0) else None
+        d["diff"] = (d["revenue"] - d["theory"]) if (d["theory"] > 0 and d["sold_l"] > 0) else None
         rows.append(d)
         cur += timedelta(days=1)
     return rows
@@ -194,18 +200,27 @@ def totals(rows):
 
 # ---------- ввод чисел
 
+_MULT = {"к": 1e3, "k": 1e3, "тыс": 1e3, "тысяч": 1e3, "т": 1e3, "м": 1e6, "m": 1e6, "млн": 1e6, "mln": 1e6, "мил": 1e6}
+
+
 def parse_num(text):
-    """«1 250 000», «12,5», «12.5» → float; None, если это не число или оно отрицательное."""
+    """«1 250 000», «12,5», «500к», «1,5 млн», «2m» → float; None, если это не число или оно отрицательное."""
     if text is None:
         return None
-    s = str(text).strip().replace(" ", "").replace(" ", "").replace(",", ".")
+    s = str(text).strip().lower().replace("\u00a0", " ")
+    mult = 1.0
+    import re
+    m = re.fullmatch(r"([\d\s.,]+?)\s*(тысяч|тыс\.?|млн|mln|мил|к|k|т|м|m)", s)
+    if m:
+        s, mult = m.group(1), _MULT[m.group(2).rstrip(".")]
+    s = s.replace(" ", "").replace(",", ".")
     if not s or s.count(".") > 1:
         return None
     try:
         v = float(s)
     except ValueError:
         return None
-    return v if v >= 0 else None
+    return v * mult if v >= 0 else None
 
 
 def parse_date(text, today):
@@ -382,3 +397,223 @@ def unit_economics(t, fixed_monthly, days_in_period):
     breakeven = (fixed_day / margin_l) if (margin_l and margin_l > 0 and fixed_day) else None
     avg_day = t["sold_l"] / days_in_period if days_in_period else 0.0
     return {"margin_l": margin_l, "breakeven_l_day": breakeven, "avg_l_day": avg_day}
+
+
+# ---------- проверка подозрительных цифр, категории расходов, налоговый календарь, цели
+
+CATEGORIES = [("Питание", ("питьев", "питан", "обед", "чай", "еда")), ("Топливо и генератор", ("бензин", "дизел", "топлив", "генератор", "солярк")), ("Коммунальные", ("свет", "электр", "вода", "коммунал", "отоплен")),
+              ("Зарплата и премии", ("зарплат", "аванс", "премия", "премии", "оклад")), ("Ремонт и запчасти", ("ремонт", "запчаст", "замен", "сварк", "шланг", "клапан", "прокладк")),
+              ("Налоги и штрафы", ("налог", "штраф", "пени")), ("Аренда", ("аренд",)), ("Связь и интернет", ("связь", "интернет", "телефон", "сим")),
+              ("Охрана", ("охран",)), ("Хозяйственные", ("уборк", "хоз", "моющ", "перчат", "тряп", "мусор", "лампочк"))]
+
+
+def categorize(comment):
+    c = (comment or "").lower()
+    for name, keys in CATEGORIES:
+        if any(k in c for k in keys):
+            return name
+    return "Прочее"
+
+
+def expense_breakdown(expense_rows):
+    """[(категория, сумма, число)] по убыванию суммы."""
+    acc = {}
+    for e in expense_rows:
+        k = categorize(e.get("comment"))
+        a = acc.setdefault(k, [0.0, 0])
+        a[0] += float(e["amount"])
+        a[1] += 1
+    return sorted(([k, v[0], v[1]] for k, v in acc.items()), key=lambda x: -x[1])
+
+
+def shift_flags(d, history_rows, cfg, today_date=None, price=None, existing=()):
+    """Что выглядит подозрительно в смене (опечатки, странные цифры). Возвращает список строк."""
+    cfg = cfg_of(cfg) if "vat_rate" not in cfg else cfg
+    out = []
+    m = meters(d)
+    sold = sum(x[2] for x in m)
+    rev = sum(float(d.get(k) or 0) for k in PAY_KEYS)
+    live = [r for r in history_rows if r["shifts"] > 0 and r["date"] != d["date"]][-14:]
+    if cfg["anomaly_pct"] > 0 and len(live) >= 5:
+        avg = sum(r["sold_l"] for r in live) / len(live)
+        if avg > 0 and sold > 0:
+            dev = 100 * (sold - avg) / avg
+            if abs(dev) >= cfg["anomaly_pct"]:
+                out.append(f"пролив {fnum(sold)} л: на {abs(dev):.0f}% {'выше' if dev > 0 else 'ниже'} обычного ({fnum(avg)} л/день). Нет ли опечатки в счётчиках?")
+        elif avg > 0 and sold == 0:
+            out.append(f"пролива нет, а обычно около {fnum(avg)} л в день.")
+    p = cfg["sale_price_l"] if price is None else price
+    if p > 0 and sold > 0 and rev > 0:
+        per = rev / sold
+        if abs(per - p) / p > 0.03:
+            out.append(f"в среднем {fnum(per)} сум за литр при цене {fnum(p)}: касса и счётчики расходятся.")
+    ak, rho = float(d.get("arr_kg") or 0), float(d.get("arr_density") or 0)
+    if ak > 0 and rho and not 0.5 <= rho <= 0.6:
+        out.append(f"плотность {str(rho).replace('.', ',')} необычная (обычно 0,54–0,56).")
+    for i in (1, 2, 3):
+        if (d.get(f"m{i}e") or 0) - (d.get(f"m{i}s") or 0) > 20000:
+            out.append(f"счётчик {i}: пролив больше 20 000 л за смену.")
+    if today_date:
+        try:
+            dd = date.fromisoformat(d["date"])
+            if dd > today_date:
+                out.append("дата смены в будущем.")
+            elif (today_date - dd).days > 7:
+                out.append(f"смена давняя ({(today_date - dd).days} дн. назад).")
+        except ValueError:
+            pass
+    for e in existing:
+        if e.get("id") != d.get("id") and e.get("date") == d.get("date") and all(float(e.get(k) or 0) == float(d.get(k) or 0) for k in ("m1s", "m1e", "m2s", "m2e", "m3s", "m3e")):
+            out.append(f"такие же показания уже есть в смене №{e['id']} (дубликат?).")
+            break
+    return out
+
+
+def per_liter(t):
+    """Деньги на 1 проданный литр за период: выручка, закуп, налоги, расходы, прибыль."""
+    if not t["sold_l"]:
+        return None
+    L = t["sold_l"]
+    return {"revenue": t["revenue"] / L, "gas": t["gas_cost"] / L, "taxes": t["taxes"] / L, "expenses": (t["expenses"] + t.get("fixed", 0)) / L, "profit": t["profit"] / L}
+
+
+def goal_progress(done, plan):
+    """(процент, строка-полоска) или None, если план не задан."""
+    if not plan or plan <= 0:
+        return None
+    pct = 100 * done / plan
+    filled = max(0, min(10, round(pct / 10)))
+    return pct, "▰" * filled + "▱" * (10 - filled)
+
+
+def tax_deadlines(today_date, due_day, n=3):
+    """Сроки сдачи НДС и акциза. Возвращает (последний прошедший срок, ближайшие n сроков) в виде [(отчётный месяц 'YYYY-MM', срок date)].
+    Срок — в месяце после отчётного, число `due_day` (не больше 28)."""
+    allx = []
+    for off in range(0, n + 3):
+        total = today_date.year * 12 + today_date.month - 1 - off
+        ry, rm = total // 12, total % 12 + 1
+        dy, dm = (ry + 1, 1) if rm == 12 else (ry, rm + 1)
+        allx.append((f"{ry}-{rm:02d}", date(dy, dm, min(int(due_day), 28))))
+    upcoming = sorted([x for x in allx if x[1] >= today_date], key=lambda x: x[1])[:n]
+    overdue = sorted([x for x in allx if x[1] < today_date], key=lambda x: x[1], reverse=True)[:1]
+    return overdue, upcoming
+
+
+def records(rows):
+    """Лучший день по литрам и по выручке: ({date, value}, {date, value}) среди дней со сменами."""
+    live = [r for r in rows if r["shifts"] > 0]
+    if not live:
+        return None, None
+    a = max(live, key=lambda r: r["sold_l"])
+    b = max(live, key=lambda r: r["revenue"])
+    return {"date": a["date"], "value": a["sold_l"]}, {"date": b["date"], "value": b["revenue"]}
+
+
+# ---------- быстрый отчёт одним сообщением и свой период
+
+def parse_range(text, today_date):
+    """«01.11 - 15.11», «15.11» → (начало, конец) в формате YYYY-MM-DD или None."""
+    import re
+    found = re.findall(r"\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?", text or "")
+    if not found or len(found) > 2:
+        return None
+    days = [parse_date(x, today_date) for x in found]
+    if any(d is None for d in days):
+        return None
+    a, b = days[0], days[-1]
+    return (a, b) if a <= b else (b, a)
+
+
+_QKEYS = [("meter", r"(?:сч[её]тчик|счет|сч|счетчик|counter|c|s)\s*([123])"), ("cash", r"нал(?:ичные|ичка)?|cash"), ("terminal", r"терм(?:инал)?|карт[аы]|card"),
+          ("click", r"клик|click"), ("paynet", r"пейнет|paynet|qr|кьюар"), ("arrival", r"приход|газ приход|arrival"), ("expense", r"расход|траты|expense"),
+          ("note", r"накладная|поставщик"), ("comment", r"комментарий|коммент|comment"), ("date", r"дата|date")]
+
+
+def parse_quick_report(text, prev_ends, today_date, default_density=0.54, default_price=0.0):
+    """Разбор отчёта, присланного одним сообщением.
+
+    Пример:  дата вчера / сч1 1500 / сч2 1000-2300 / сч3 0 / нал 1 млн / терм 500к / клик 300000 / пейнет 200000 /
+             приход 1000 0.54 5000 / расход 50000 бензин / накладная №77.
+    У счётчика можно написать только конец (начало берём из прошлой смены) или «начало-конец».
+    Возвращает (d, errors); d готов для db.add_shift (плюс exps и photos)."""
+    import re
+    d = {"date": today_date.isoformat(), "exps": [], "photos": [], "cash": 0.0, "terminal": 0.0, "click": 0.0, "paynet": 0.0, "arr_kg": 0.0, "arr_density": 0.0, "arr_price": 0.0}
+    errs, seen = [], set()
+    for raw in (text or "").replace(";", "\n").splitlines():
+        line = raw.strip().lstrip("•-*—").strip()
+        if not line:
+            continue
+        low = line.lower()
+        for kind, pat in _QKEYS:
+            m = re.match(rf"^(?:{pat})\b[\s:=]*(.*)$", low) if kind != "meter" else re.match(rf"^{pat}[\s:=]+(.*)$", low)
+            if m:
+                break
+        else:
+            errs.append(f"не понял строку: «{line[:40]}»")
+            continue
+        rest = line[len(line) - len(m.group(m.lastindex)):] if m.lastindex else ""  # хвост с исходным регистром
+        if kind == "meter":
+            n = int(m.group(1))
+            rest = line[len(line) - len(m.group(2)):]
+            vals = [parse_num(x.strip()) for x in re.split(r"[-–\s]+(?=\d)|\s*-\s*", rest.strip()) if x.strip()]
+            vals = [v for v in vals if v is not None]
+            if len(vals) == 1:
+                start = prev_ends.get(n)
+                if start is None:
+                    errs.append(f"счётчик {n}: нет прошлой смены, укажите «начало-конец»")
+                    continue
+                s_, e_ = start, vals[0]
+            elif len(vals) == 2:
+                s_, e_ = vals
+            else:
+                errs.append(f"счётчик {n}: не понял «{rest[:30]}»")
+                continue
+            if e_ < s_:
+                errs.append(f"счётчик {n}: конец ({e_:g}) меньше начала ({s_:g})")
+                continue
+            d[f"m{n}s"], d[f"m{n}e"] = s_, e_
+            seen.add(n)
+        elif kind in ("cash", "terminal", "click", "paynet"):
+            v = parse_num(rest)
+            if v is None:
+                errs.append(f"{kind}: нужна сумма, а не «{rest[:20]}»")
+            else:
+                d[kind] = v
+        elif kind == "arrival":
+            parts = rest.split()
+            kg = parse_num(parts[0]) if parts else None
+            if kg is None or kg <= 0:
+                errs.append("приход: укажите массу в кг, например «приход 1000 0.54 5000»")
+                continue
+            rho = parse_num(parts[1]) if len(parts) > 1 else None
+            price = parse_num(" ".join(parts[2:4])) if len(parts) > 2 else None
+            d["arr_kg"] = kg
+            d["arr_density"] = rho if rho and 0.4 <= rho <= 0.7 else default_density
+            d["arr_price"] = price or default_price
+            if not d["arr_price"]:
+                errs.append("приход: нет цены закупа (укажите третьим числом или задайте в настройках)")
+        elif kind == "expense":
+            m2 = re.match(r"^((?:\d[\d.,]*)(?:\s\d{3})*(?:\s*(?:тыс|млн|к|k|m))?)\s*(.*)$", rest.strip(), flags=re.I)
+            amount = parse_num(m2.group(1)) if m2 else None
+            if not amount:
+                errs.append(f"расход: нужна сумма, например «расход 50000 бензин»")
+            else:
+                d["exps"].append((amount, m2.group(2).strip()))
+        elif kind == "note":
+            d["arr_note"] = rest.strip()[:120]
+        elif kind == "comment":
+            d["comment"] = rest.strip()[:300]
+        elif kind == "date":
+            v = parse_date(rest.strip(), today_date)
+            if not v:
+                errs.append(f"дата: не понял «{rest[:20]}»")
+            else:
+                d["date"] = v
+    for n in (1, 2, 3):
+        if n not in seen and not any(e.startswith(f"счётчик {n}") for e in errs):
+            if prev_ends.get(n) is not None:  # счётчик не упомянут: не работал
+                d[f"m{n}s"] = d[f"m{n}e"] = prev_ends[n]
+            else:
+                errs.append(f"счётчик {n}: нет показаний")
+    return d, errs

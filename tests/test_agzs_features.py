@@ -53,7 +53,7 @@ class Uzbek(unittest.TestCase):
         self.assertIn("smena hisoboti", text)
         self.assertIn("Jami quyilgan", text)
         self.assertNotIn("НДС", text)
-        self.assertIn("rahmat", c.message.answer.call_args[0][0])
+        self.assertTrue(any("rahmat" in call.args[0] for call in c.message.answer.call_args_list))
         m = e.msg(OP, "📋 Mening smenalarim")
         run(bot.my_shifts(m))
         self.assertIn("Oxirgi smenalaringiz", e.last_text(m))
@@ -87,7 +87,7 @@ class Approval(unittest.TestCase):
         calls = [c for c in e.tg.send_message.call_args_list if c.args[0] == OWNER]
         self.assertTrue(calls)
         kb = calls[0].kwargs["reply_markup"].inline_keyboard
-        self.assertEqual([b.callback_data for b in kb[0]], [f"ap:{s['id']}:ok", f"ap:{s['id']}:ret"])
+        self.assertEqual([b.callback_data for b in kb[0]], [f"ap:{s['id']}:ok", f"rr:{s['id']}"])
         e.tg.send_message.reset_mock()
         run(bot.approve_cb(e.cb(OWNER, f"ap:{s['id']}:ok")))
         self.assertEqual(core.db.shift(s["id"])["status"], "approved")

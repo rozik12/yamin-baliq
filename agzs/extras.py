@@ -13,6 +13,7 @@ import calc
 import core
 from calc import fnum, parse_num
 from core import can, today, uname
+from ui import MENU
 
 router = Router()
 B_ACC = "💼 Бухгалтерия"
@@ -21,6 +22,10 @@ MONTHS_GEN = ["января", "февраля", "марта", "апреля", "�
 
 
 class Pay(StatesGroup):
+    line = State()
+
+
+class TaxPay(StatesGroup):
     line = State()
 
 
@@ -62,7 +67,9 @@ async def acc_menu(m: Message, state: FSMContext):
         [("📑 Налоговый отчёт", "ac:tax"), ("🚚 Поставщик и долг", "ac:sup")],
         [("💵 Инкассация и касса", "ac:cash"), ("🏢 Постоянные расходы", "ac:fix")],
         [("👷 Операторы", "ac:ops"), ("🔮 Прогноз и заявка", "ac:fc")],
-        [("📜 Журнал действий", "ac:log")]]))
+        [("📜 Журнал действий", "ac:log"), ("🗓 Календарь налогов", "ac:cal")],
+        [("💳 Уплата налогов", "ac:tp"), ("🔒 Закрытие месяца", "ac:lock")],
+        [("📥 Импорт из Excel", "im:start")]]))
 
 
 @router.callback_query(F.data.startswith("ac:"))
@@ -71,7 +78,8 @@ async def acc_cb(c: CallbackQuery, state: FSMContext):
         return await c.answer()
     await c.answer()
     act = c.data[3:]
-    handler = {"tax": tax_menu, "sup": supplier, "cash": cash, "fix": fixed, "ops": ops_menu, "fc": forecast_screen, "log": journal}[act]
+    handler = {"tax": tax_menu, "sup": supplier, "cash": cash, "fix": fixed, "ops": ops_menu, "fc": forecast_screen, "log": journal,
+               "cal": tax_calendar, "tp": tax_paid, "lock": lock_menu}[act]
     await handler(c.message)
 
 
@@ -348,3 +356,80 @@ async def compare_cb(c: CallbackQuery):
         lines.append("\nℹ️ В прошлом периоде смен не было, сравнивать пока не с чем.")
     await c.message.answer("\n".join(lines))
     await c.answer()
+
+
+# ---------- календарь налогов, уплата налогов, закрытие месяца
+
+async def tax_calendar(msg):
+    t0 = today()
+    over, up = calc.tax_deadlines(t0, int(core.cfg()["tax_due_day"]), 4)
+    lines = ["🗓 Календарь налогов (НДС и акциз)", ""]
+    for mon, d in over:
+        lines.append(f"🔴 Просрочено: за {mon}, срок был {d.strftime('%d.%m.%Y')}")
+    for mon, d in up:
+        left = (d - t0).days
+        lines.append(f"{'🟠' if left <= 5 else '🟢'} За {mon}: до {d.strftime('%d.%m.%Y')} (через {left} дн.)")
+    await msg.answer("\n".join(lines))
+
+
+async def tax_paid(msg):
+    pays = core.db.tax_payments()
+    total = sum(p["amount"] for p in pays)
+    lines = ["💳 Уплаченные налоги", "", f"Всего внесено: {fnum(total)} сум"]
+    for p in pays[-8:]:
+        lines.append(f"• {dm(p['date'])} — {fnum(p['amount'])}" + (f" ({p['note']})" if p["note"] else ""))
+    first = today().replace(day=1)
+    prev = (first - timedelta(days=1)).replace(day=1)
+    s, e = calc.month_bounds(prev.year, prev.month)
+    tot = calc.totals(core.rows_for(s, e))
+    if tot["shifts"]:
+        lines.append(f"\nНачислено за {MONTHS[prev.month - 1]}: {fnum(max(tot['vat_net'], 0) + tot['excise'])} сум")
+    await msg.answer("\n".join(lines), reply_markup=ikb([[("➕ Внести платёж", "tp:new")]]))
+
+
+@router.callback_query(F.data == "tp:new")
+async def taxpay_new(c: CallbackQuery, state: FSMContext):
+    if can(c.from_user.id, "accounting"):
+        await state.set_state(TaxPay.line)
+        await c.message.answer("Напишите сумму и, если нужно, пояснение: «3 500 000 НДС за октябрь».")
+    await c.answer()
+
+
+@router.message(TaxPay.line, ~F.text.in_(MENU))
+async def taxpay_line(m: Message, state: FSMContext):
+    if not can(m.from_user.id, "accounting"):
+        return
+    r = split_amount(m.text)
+    if not r:
+        return await m.answer("Не понял сумму. Пример: 3 500 000 НДС за октябрь")
+    await state.clear()
+    core.db.add_tax_payment(today().isoformat(), r[0], r[1], uname(m.from_user))
+    core.db.log(uname(m.from_user), "tax_payment", f"{fnum(r[0])} {r[1]}")
+    await m.answer(f"✅ Платёж {fnum(r[0])} сум записан.")
+
+
+async def lock_menu(msg, uid=None):
+    locked = core.db.locked_months()
+    t0 = today().replace(day=1)
+    months = []
+    d = t0
+    for _ in range(6):
+        months.append(d)
+        d = (d - timedelta(days=1)).replace(day=1)
+    rows = [[(f"{'🔒' if x.strftime('%Y-%m') in locked else '🔓'} {MONTHS[x.month - 1].capitalize()} {x.year}", f"lk:{x.strftime('%Y-%m')}")] for x in months]
+    await msg.answer("🔒 Закрытие месяца: в закрытом месяце нельзя менять и удалять смены (кроме владельца). Нажмите на месяц, чтобы закрыть или открыть.", reply_markup=ikb(rows))
+
+
+@router.callback_query(F.data.startswith("lk:"))
+async def lock_toggle(c: CallbackQuery):
+    if not can(c.from_user.id, "settings"):
+        return await c.answer("Закрывать месяц может только владелец", show_alert=True)
+    mon = c.data[3:]
+    if mon in core.db.locked_months():
+        core.db.unlock_month(mon)
+        core.db.log(uname(c.from_user), "month_unlocked", mon)
+    else:
+        core.db.lock_month(mon, uname(c.from_user))
+        core.db.log(uname(c.from_user), "month_locked", mon)
+    await c.answer("Готово")
+    await lock_menu(c.message)

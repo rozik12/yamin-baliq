@@ -187,5 +187,126 @@ class Analytics(unittest.TestCase):
         self.assertEqual(calc.prev_month(date(2026, 1, 15)), date(2025, 12, 1))
 
 
+class Wave1(unittest.TestCase):
+    def test_smart_numbers(self):
+        cases = {"500к": 500_000, "500K": 500_000, "1,5 млн": 1_500_000, "2m": 2_000_000, "300 тыс": 300_000, "5 т": 5_000, "1 250 000": 1_250_000,
+                 "12,5": 12.5, "0": 0, "0,54": 0.54, "2 000 000": 2_000_000}
+        for text, v in cases.items():
+            self.assertAlmostEqual(calc.parse_num(text), v, 6, text)
+        for bad in ("abc", "-5", "к", "5 ккк", "1.2.3", "млн", ""):
+            self.assertIsNone(calc.parse_num(bad), bad)
+
+    def test_expense_categories(self):
+        c = calc.categorize
+        self.assertEqual(c("50000 бензин для генератора"), "Топливо и генератор")
+        self.assertEqual(c("вода питьевая"), "Питание")
+        self.assertEqual(c("оплата света"), "Коммунальные")
+        self.assertEqual(c("аванс Али"), "Зарплата и премии")
+        self.assertEqual(c("замена шланга"), "Ремонт и запчасти")
+        self.assertEqual(c(""), "Прочее")
+        br = calc.expense_breakdown([{"amount": 50000, "comment": "бензин"}, {"amount": 20000, "comment": "бензин для генератора"}, {"amount": 10000, "comment": "хз"}])
+        self.assertEqual(br[0], ["Топливо и генератор", 70000, 2])
+        self.assertEqual(br[1][0], "Прочее")
+
+    def test_price_history_changes_theory(self):
+        s2 = dict(SHIFT, id=2, ts="t4", date="2026-11-12")
+        hist = {"2026-11-10": 3000.0, "2026-11-12": 3300.0}
+        at = lambda d: 3300.0 if d >= "2026-11-12" else 3000.0
+        rows = calc.day_rows([SHIFT, s2], {}, [OPEN], CFG, "2026-11-10", "2026-11-12", price_at=at)
+        self.assertEqual(rows[0]["theory"], 800 * 3000)
+        self.assertEqual(rows[2]["theory"], 800 * 3300)
+        self.assertEqual(rows[0]["diff"], 2_000_000 - 2_400_000)
+
+    def history(self, n=8, sold=800):
+        return [{"date": f"2026-11-{i + 1:02d}", "shifts": 1, "sold_l": sold} for i in range(n)]
+
+    def test_flags_typo_and_prices_and_dates(self):
+        cfg = calc.cfg_of({"sale_price_l": 2500})  # 800 л × 2500 = 2 000 000 — касса сходится
+        ok = calc.shift_flags(SHIFT, self.history(), cfg, date(2026, 11, 10))
+        self.assertEqual(ok, [])
+        typo = dict(SHIFT, m1e=15000)
+        self.assertTrue(any("выше обычного" in f for f in calc.shift_flags(typo, self.history(), cfg, date(2026, 11, 10))))
+        low = dict(SHIFT, m1e=1100, m2e=2000)
+        self.assertTrue(any("ниже обычного" in f for f in calc.shift_flags(low, self.history(), cfg, date(2026, 11, 10))))
+        zero = dict(SHIFT, m1e=1000, m2e=2000)
+        self.assertTrue(any("пролива нет" in f for f in calc.shift_flags(zero, self.history(), cfg, date(2026, 11, 10))))
+        cash = dict(SHIFT, cash=100_000)
+        self.assertTrue(any("за литр" in f for f in calc.shift_flags(cash, self.history(), cfg, date(2026, 11, 10))))
+        dens = dict(SHIFT, arr_density=0.7)
+        self.assertTrue(any("плотность" in f for f in calc.shift_flags(dens, self.history(), cfg, date(2026, 11, 10))))
+        self.assertTrue(any("в будущем" in f for f in calc.shift_flags(dict(SHIFT, date="2026-11-20"), [], cfg, date(2026, 11, 10))))
+        self.assertTrue(any("давняя" in f for f in calc.shift_flags(dict(SHIFT, date="2026-10-01"), [], cfg, date(2026, 11, 10))))
+        dup = calc.shift_flags(dict(SHIFT, id=None), [], cfg, date(2026, 11, 10), existing=[SHIFT])
+        self.assertTrue(any("дубликат" in f for f in dup))
+        self.assertFalse(any("обычного" in f for f in calc.shift_flags(typo, self.history(3), cfg, date(2026, 11, 10))))  # мало истории
+        self.assertFalse(any("обычного" in f for f in calc.shift_flags(typo, self.history(), calc.cfg_of({"sale_price_l": 2500, "anomaly_pct": 0}), date(2026, 11, 10))))
+
+    def test_per_liter_goal_deadlines_records(self):
+        rows = calc.day_rows([SHIFT], {1: [60000]}, [OPEN], CFG, "2026-11-10", "2026-11-10")
+        t = calc.totals(rows)
+        pl = calc.per_liter(t)
+        self.assertAlmostEqual(pl["revenue"], 2_000_000 / 800)
+        self.assertAlmostEqual(pl["profit"], t["profit"] / 800)
+        self.assertIsNone(calc.per_liter(calc.totals([])))
+        pct, bar = calc.goal_progress(750, 1000)
+        self.assertEqual((pct, bar), (75.0, "▰▰▰▰▰▰▰▰▱▱"))
+        self.assertIsNone(calc.goal_progress(5, 0))
+        over, up = calc.tax_deadlines(date(2026, 11, 17), 20, 3)
+        self.assertEqual(up[0], ("2026-10", date(2026, 11, 20)))
+        self.assertEqual(up[1], ("2026-11", date(2026, 12, 20)))
+        self.assertEqual(over[0], ("2026-09", date(2026, 10, 20)))
+        o2, u2 = calc.tax_deadlines(date(2026, 11, 21), 20, 2)
+        self.assertEqual(u2[0][1], date(2026, 12, 20))
+        lit, rev = calc.records(calc.day_rows([SHIFT, dict(SHIFT, id=2, ts="t9", date="2026-11-11", m1e=1900)], {}, [OPEN], CFG))
+        self.assertEqual(lit["date"], "2026-11-11")
+        self.assertEqual(calc.records([]), (None, None))
+
+
+class QuickReport(unittest.TestCase):
+    PREV = {1: 1000, 2: 1000, 3: 0}
+    TODAY = date(2026, 11, 17)
+    FULLTXT = "дата вчера\nсч1 1500\nсч2 1000-2300\nсч3 0\nнал 1 млн\nтерм 500к\nклик 300000\nпейнет 200000\nприход 1000 0.54 5000\nрасход 50000 бензин для генератора\nрасход 10 000 вода\nнакладная №77\nкомментарий всё хорошо"
+
+    def test_full_report(self):
+        d, errs = calc.parse_quick_report(self.FULLTXT, self.PREV, self.TODAY)
+        self.assertEqual(errs, [])
+        self.assertEqual(d["date"], "2026-11-16")
+        self.assertEqual((d["m1s"], d["m1e"], d["m2s"], d["m2e"], d["m3s"], d["m3e"]), (1000, 1500, 1000, 2300, 0, 0))
+        self.assertEqual((d["cash"], d["terminal"], d["click"], d["paynet"]), (1_000_000, 500_000, 300_000, 200_000))
+        self.assertEqual((d["arr_kg"], d["arr_density"], d["arr_price"]), (1000, 0.54, 5000))
+        self.assertEqual(d["exps"], [(50000, "бензин для генератора"), (10000, "вода")])
+        self.assertEqual((d["arr_note"], d["comment"]), ("№77", "всё хорошо"))
+
+    def test_lenient_formats(self):
+        d, errs = calc.parse_quick_report("Сч1: 1500\nСчётчик 2 - 2300\nНал 100к; Терминал 50 тыс\nПейнет 20000", self.PREV, self.TODAY)
+        self.assertEqual(errs, [])
+        self.assertEqual((d["m1e"], d["m2e"], d["m3e"], d["cash"], d["terminal"], d["paynet"], d["click"]), (1500, 2300, 0, 100_000, 50_000, 20_000, 0))
+        self.assertEqual(d["date"], "2026-11-17")
+
+    def test_errors_are_reported(self):
+        _, errs = calc.parse_quick_report("сч1 500\nнал abc\nпривет\nприход 1000\nрасход много", self.PREV, self.TODAY)
+        text = " | ".join(errs)
+        self.assertIn("конец (500) меньше начала (1000)", text)
+        self.assertIn("нужна сумма", text)
+        self.assertIn("не понял строку", text)
+        self.assertIn("нет цены закупа", text)
+        _, e2 = calc.parse_quick_report("сч1 100", {}, self.TODAY)
+        self.assertEqual(len(e2), 3)  # нет прошлой смены — просят «начало-конец» и показания остальных
+        d3, e3 = calc.parse_quick_report("сч1 1000-1500\nсч2 1000-1000\nсч3 0-0", {}, self.TODAY, default_price=5000)
+        self.assertEqual(e3, [])
+
+    def test_default_density_and_price(self):
+        d, errs = calc.parse_quick_report("сч1 1100\nприход 2000", self.PREV, self.TODAY, default_density=0.56, default_price=4800)
+        self.assertEqual(errs, [])
+        self.assertEqual((d["arr_density"], d["arr_price"]), (0.56, 4800))
+
+    def test_parse_range(self):
+        self.assertEqual(calc.parse_range("01.11 - 15.11", self.TODAY), ("2026-11-01", "2026-11-15"))
+        self.assertEqual(calc.parse_range("15.11 - 01.11", self.TODAY), ("2026-11-01", "2026-11-15"))
+        self.assertEqual(calc.parse_range("15.11", self.TODAY), ("2026-11-15", "2026-11-15"))
+        for bad in ("", "abc", "1.11 2.11 3.11", "31.02"):
+            self.assertIsNone(calc.parse_range(bad, self.TODAY), bad)
+
+
 if __name__ == "__main__":
     unittest.main()

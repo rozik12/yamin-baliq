@@ -29,10 +29,14 @@ class DB:
         CREATE TABLE IF NOT EXISTS collections(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, ts TEXT, amount REAL, note TEXT, user_name TEXT);
         CREATE TABLE IF NOT EXISTS fixed_expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount REAL);
         CREATE TABLE IF NOT EXISTS langs(id INTEGER PRIMARY KEY, lang TEXT);
+        CREATE TABLE IF NOT EXISTS sale_prices(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, price REAL, user_name TEXT);
+        CREATE TABLE IF NOT EXISTS locks(month TEXT PRIMARY KEY, user_name TEXT, ts TEXT);
+        CREATE TABLE IF NOT EXISTS tax_payments(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, ts TEXT, amount REAL, note TEXT, user_name TEXT);
+        CREATE TABLE IF NOT EXISTS prefs(uid INTEGER, key TEXT, value INTEGER, PRIMARY KEY(uid, key));
         CREATE TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY, username TEXT, name TEXT, ts TEXT);
         CREATE TABLE IF NOT EXISTS grants(username TEXT PRIMARY KEY, role TEXT, created_by TEXT, ts TEXT);
         """)
-        for table, col, ddl in (("shifts", "status", "TEXT DEFAULT 'approved'"), ("shifts", "photos", "TEXT DEFAULT ''"), ("shifts", "arr_note", "TEXT DEFAULT ''"),
+        for table, col, ddl in (("shifts", "status", "TEXT DEFAULT 'approved'"), ("shifts", "photos", "TEXT DEFAULT ''"), ("shifts", "arr_note", "TEXT DEFAULT ''"), ("shifts", "comment", "TEXT DEFAULT ''"),
                                 ("adjustments", "expected_l", "REAL"), ("adjustments", "expected_kg", "REAL")):
             try:
                 self.c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
@@ -94,6 +98,8 @@ class DB:
             (d["date"], now().isoformat(timespec="microseconds"), uid, uname, d["m1s"], d["m1e"], d["m2s"], d["m2e"], d["m3s"], d["m3e"],
              d["cash"], d["terminal"], d["click"], d["paynet"], d.get("arr_kg", 0), d.get("arr_density", 0), d.get("arr_price", 0),
              status, ",".join(d.get("photos", [])), d.get("arr_note", "")))
+        if d.get("comment"):
+            self.c.execute("UPDATE shifts SET comment=? WHERE id=?", (d["comment"], cur.lastrowid))
         sid = cur.lastrowid
         for amount, comment in expenses:
             self.c.execute("INSERT INTO expenses(shift_id,amount,comment) VALUES(?,?,?)", (sid, amount, comment))
@@ -253,3 +259,44 @@ class DB:
     def get_user(self, uid):
         r = self.c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         return dict(r) if r else None
+
+    # --- история цен продажи, закрытие месяцев, налоговые платежи, настройки уведомлений
+    def add_price(self, date, price, user_name=""):
+        self.c.execute("INSERT INTO sale_prices(date,price,user_name) VALUES(?,?,?)", (date, price, user_name))
+        self.c.commit()
+
+    def prices(self):
+        return [dict(r) for r in self.c.execute("SELECT * FROM sale_prices ORDER BY date, id")]
+
+    def lock_month(self, month, user_name=""):
+        self.c.execute("INSERT OR REPLACE INTO locks(month,user_name,ts) VALUES(?,?,?)", (month, user_name, now().isoformat(timespec="seconds")))
+        self.c.commit()
+
+    def unlock_month(self, month):
+        self.c.execute("DELETE FROM locks WHERE month=?", (month,))
+        self.c.commit()
+
+    def locked_months(self):
+        return {r["month"] for r in self.c.execute("SELECT month FROM locks")}
+
+    def is_locked(self, date):
+        return bool(self.c.execute("SELECT 1 FROM locks WHERE month=?", ((date or "")[:7],)).fetchone())
+
+    def add_tax_payment(self, date, amount, note="", user_name=""):
+        self.c.execute("INSERT INTO tax_payments(date,ts,amount,note,user_name) VALUES(?,?,?,?,?)", (date, now().isoformat(timespec="microseconds"), amount, note, user_name))
+        self.c.commit()
+
+    def tax_payments(self):
+        return [dict(r) for r in self.c.execute("SELECT * FROM tax_payments ORDER BY date, id")]
+
+    def pref(self, uid, key, default=1):
+        r = self.c.execute("SELECT value FROM prefs WHERE uid=? AND key=?", (uid, key)).fetchone()
+        return default if r is None else r["value"]
+
+    def set_pref(self, uid, key, value):
+        self.c.execute("INSERT INTO prefs(uid,key,value) VALUES(?,?,?) ON CONFLICT(uid,key) DO UPDATE SET value=excluded.value", (uid, key, int(value)))
+        self.c.commit()
+
+    def set_comment(self, sid, text):
+        self.c.execute("UPDATE shifts SET comment=? WHERE id=?", (text, sid))
+        self.c.commit()

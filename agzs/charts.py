@@ -12,7 +12,7 @@ from calc import PAY_KEYS, PAY_NAMES, fnum  # noqa: E402
 
 GREEN, RED, BLUE, ORANGE, PURPLE, TEAL, GREY = "#2E9E5B", "#D64545", "#2F6FDE", "#F29F3D", "#8A5CD0", "#17A2A2", "#8C95A3"
 KINDS = {"sales": "Продажи (проливы)", "revenue": "Выручка", "expenses": "Расходы", "profit": "Чистая прибыль", "stock": "Остаток газа",
-         "weekday": "По дням недели", "structure": "Структура оплат", "buy_price": "Цена закупа газа"}
+         "weekday": "По дням недели", "structure": "Структура оплат", "buy_price": "Цена закупа газа", "exp_cat": "Расходы по категориям"}
 MAX_DAILY_POINTS = 100
 
 
@@ -86,7 +86,7 @@ def render(kind, rows, cfg, period_label, extra=None):
     """PNG-байты графика. rows — строки calc.day_rows."""
     if kind not in KINDS:
         raise ValueError(kind)
-    if kind in ("weekday", "structure", "buy_price"):
+    if kind in ("weekday", "structure", "buy_price", "exp_cat"):
         return _render_special(kind, rows, period_label, extra)
     rows, step = aggregate(rows)
     fig, ax = plt.subplots(figsize=(11, 6.2), dpi=110)
@@ -208,6 +208,26 @@ def _render_special(kind, rows, period_label, extra):
             ax.text(0, 0, f"{short(total)}\nсум", ha="center", va="center", fontsize=15, fontweight="bold")
             subtitle = f"Всего принято: {fnum(total)} сум"
         step = "доли в выручке"
+    elif kind == "exp_cat":
+        cats = extra or []
+        if not cats:
+            ax.text(0.5, 0.5, "Нет расходов на месте за период", ha="center", va="center", transform=ax.transAxes, fontsize=13)
+            ax.axis("off")
+        else:
+            names = [c[0] for c in cats][::-1]
+            vals = [c[1] for c in cats][::-1]
+            palette = [BLUE, ORANGE, GREEN, PURPLE, TEAL, RED, GREY, "#C9A227", "#7A9E9F", "#B5838D", "#6D6875"]
+            ax.barh(names, vals, color=[palette[i % len(palette)] for i in range(len(vals))][::-1])
+            total = sum(vals)
+            for i, v in enumerate(vals):
+                ax.text(v, i, f" {fnum(v)} ({100 * v / total:.0f}%)", va="center", fontsize=10)
+            ax.margins(x=0.25)
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: fnum(v)))
+            ax.grid(axis="x", alpha=0.3)
+            for sp in ("top", "right"):
+                ax.spines[sp].set_visible(False)
+            subtitle = f"Всего расходов на месте: {fnum(total)} сум"
+        step = "по статьям"
     else:  # buy_price
         pts = extra or []
         if not pts:

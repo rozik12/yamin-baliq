@@ -52,8 +52,8 @@ class Matrix(unittest.TestCase):
         a = labels(ACC)
         self.assertTrue({bot.B_FIN, bot.B_ACC, bot.B_SHIFTS, bot.B_STOCK} <= a)
         self.assertFalse({"➕ Сменный отчёт", bot.B_SET, bot.B_STAFF} & a)
-        self.assertEqual(labels(OBS), {bot.B_STOCK, bot.B_FIN, bot.B_GRAPH, bot.B_XLS})
-        self.assertEqual(labels(OP), {"➕ Сменный отчёт", "📋 Мои смены", "🌐 Язык"})
+        self.assertEqual(labels(OBS), {bot.B_HOME, bot.B_STOCK, bot.B_FIN, bot.B_GRAPH, bot.B_XLS})
+        self.assertEqual(labels(OP), {"➕ Сменный отчёт", "⚡ Быстрый отчёт", "📋 Мои смены", "🏠 Главная", "🌐 Язык"})
 
     def test_welcome_texts_by_position(self):
         m = self.e.msg(ACC, "/start")

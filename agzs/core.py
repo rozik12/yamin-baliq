@@ -43,13 +43,20 @@ def is_admin(uid):
     return role(uid) == "admin"
 
 
-def ids_with(perm):
-    """Кто получает сообщения/кнопки с этим правом (владельцы из настроек сервера тоже)."""
+def ids_with(perm, pref=None):
+    """Кто получает сообщения/кнопки с этим правом (владельцы из настроек сервера тоже).
+    pref — вид уведомления (daily, weekly, alerts, shifts, tax, remind): тех, кто его отключил, пропускаем."""
     out = {a for a in db.admin_ids if perm in PERMS["admin"]}
     for u in db.users():
         if perm in PERMS.get(u["role"], ()):
             out.add(u["id"])
+    if pref:
+        out = {uid for uid in out if db.pref(uid, "n_" + pref, 1)}
     return out
+
+
+def month_locked(date_iso):
+    return db.is_locked(date_iso)
 
 
 def person_name(uid):
@@ -97,8 +104,26 @@ def lang(uid):
     return db.get_lang(uid) if role(uid) == "operator" else "ru"
 
 
+def price_lookup():
+    """Функция «дата → цена продажи на эту дату»: по истории изменений цены, а если истории нет — из настроек."""
+    hist = db.prices()
+    base = cfg()["sale_price_l"]
+
+    def at(d):
+        price = None
+        for h in hist:
+            if h["date"] <= d:
+                price = h["price"]
+            else:
+                break
+        if price is None:
+            return hist[0]["price"] if hist else base
+        return price
+    return at
+
+
 def rows_for(start, end):
-    return calc.day_rows(db.shifts(), db.expenses_map(), db.adjustments(), cfg(), start, end, fixed_monthly())
+    return calc.day_rows(db.shifts(), db.expenses_map(), db.adjustments(), cfg(), start, end, fixed_monthly(), price_lookup())
 
 
 def tank_state():
@@ -118,6 +143,11 @@ def period_range(code):
         return (t - timedelta(days=6)).isoformat(), t.isoformat(), "неделя"
     if code == "month":
         return (t - timedelta(days=29)).isoformat(), t.isoformat(), "месяц"
+    if code == "quarter":
+        q0 = 3 * ((t.month - 1) // 3) + 1
+        return t.replace(month=q0, day=1).isoformat(), t.isoformat(), "квартал"
+    if code == "year":
+        return t.replace(month=1, day=1).isoformat(), t.isoformat(), "год"
     return (first[0]["date"] if first else t.isoformat()), t.isoformat(), "всё время"
 
 

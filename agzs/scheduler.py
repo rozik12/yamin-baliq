@@ -11,7 +11,7 @@ import texts
 from db import now
 
 log = logging.getLogger("agzs.scheduler")
-JOBS = ("daily_report", "weekly_report", "tax_reminder", "stock_alert", "shift_reminder", "backup")
+JOBS = ("daily_report", "weekly_report", "tax_reminder", "stock_alert", "shift_reminder", "backup", "monthly_report")
 
 
 def _minutes(hhmm):
@@ -36,6 +36,8 @@ def due_jobs(dt, settings, sent):
         out.append("daily_report")
     if cfg["auto_daily"] and dt.weekday() == 0 and hm >= 9 * 60 and once("weekly_report"):
         out.append("weekly_report")
+    if cfg["auto_daily"] and dt.day == 1 and hm >= 9 * 60 + 30 and once("monthly_report"):
+        out.append("monthly_report")
     due = int(cfg["tax_due_day"])
     if hm >= 9 * 60 and dt.day in (due - 3, due) and once("tax_reminder"):
         out.append("tax_reminder")
@@ -49,8 +51,8 @@ def due_jobs(dt, settings, sent):
     return out
 
 
-async def _send_admins(bot, text, perm="finance", **kw):
-    for a in core.ids_with(perm):
+async def _send_admins(bot, text, perm="finance", pref=None, **kw):
+    for a in core.ids_with(perm, pref):
         try:
             await bot.send_message(a, text, **kw)
         except Exception:
@@ -63,23 +65,28 @@ async def run_job(bot, job):
     t = core.today()
     if job == "daily_report":
         rows = core.rows_for(t.isoformat(), t.isoformat())
-        await _send_admins(bot, "📅 Итоги дня\n\n" + reports.finance_text(rows, "сегодня", t.isoformat(), t.isoformat()))
+        await _send_admins(bot, "📅 Итоги дня\n\n" + reports.finance_text(rows, "сегодня", t.isoformat(), t.isoformat()), pref="daily")
     elif job == "weekly_report":
         s, e, label = core.period_range("week")
-        await _send_admins(bot, "🗓 Итоги недели\n\n" + reports.finance_text(core.rows_for(s, e), label, s, e))
+        await _send_admins(bot, "🗓 Итоги недели\n\n" + reports.finance_text(core.rows_for(s, e), label, s, e), pref="weekly")
         data, name, _ = await reports.build_excel("month")
         from aiogram.types import BufferedInputFile
-        for a in core.ids_with("finance"):
+        for a in core.ids_with("finance", "weekly"):
             try:
                 await bot.send_document(a, BufferedInputFile(data, name), caption="📤 Сводная таблица за 30 дней (автоотчёт)")
             except Exception:
                 pass
+    elif job == "monthly_report":
+        prev = (t.replace(day=1) - timedelta(days=1))
+        s, e = calc.month_bounds(prev.year, prev.month)
+        label = f"{extras.MONTHS[prev.month - 1]} {prev.year}"
+        await _send_admins(bot, f"🗓 Итоги месяца ({label})\n\n" + reports.finance_text(core.rows_for(s, e), label, s, e), pref="weekly")
     elif job == "tax_reminder":
         first = t.replace(day=1)
         prev = (first - timedelta(days=1)).replace(day=1)
         s, e = calc.month_bounds(prev.year, prev.month)
         due = int(core.cfg()["tax_due_day"])
-        await _send_admins(bot, perm="accounting", text=f"⏰ Напоминание: до {due} числа нужно сдать НДС и акциз за {extras.MONTHS[prev.month - 1]} {prev.year}.\n\n" + extras.tax_text(s, e, f"{extras.MONTHS[prev.month - 1]} {prev.year}"))
+        await _send_admins(bot, perm="accounting", pref="tax", text=f"⏰ Напоминание: до {due} числа нужно сдать НДС и акциз за {extras.MONTHS[prev.month - 1]} {prev.year}.\n\n" + extras.tax_text(s, e, f"{extras.MONTHS[prev.month - 1]} {prev.year}"))
     elif job == "stock_alert":
         st, fc = core.stock_forecast()
         await reports.alert_stock(bot, st, fc)
