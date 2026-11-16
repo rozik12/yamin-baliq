@@ -90,6 +90,9 @@ class AgzsSpec(unittest.TestCase):
         for k in ("CARD_NUMBER", "CONVERTER_BOT_TOKEN", "AGZS_BOT_TOKEN", "AICALL_API_KEY", "AGZS_ADMIN_IDS"):
             self.assertNotIn(k, g)
         self.assertNotIn("agzs", dict(run_clients.specs({"BOT_TOKEN": "A"})))
+        self.assertEqual(g["OWNER_USERNAMES"], "")
+        owners = dict(run_clients.specs(dict(env, AGZS_OWNER_USERNAMES="baxshillayevr_03")))["agzs"]
+        self.assertEqual(owners["OWNER_USERNAMES"], "baxshillayevr_03")
         self.assertEqual([n for n, _ in run_clients.specs(dict(env, RUN_ONLY="converter,agzs"))], ["converter", "agzs"])
         self.assertEqual(g["PYTHONUNBUFFERED"] if "PYTHONUNBUFFERED" in g else "", "")
 

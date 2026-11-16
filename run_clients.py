@@ -49,7 +49,8 @@ def specs(env=None):
         # Бот-бухгалтер АГЗС (agzs/): токен, владельцы и база свои, остальное из окружения не передаём.
         e = {k: v for k, v in env.items() if k not in PER_CLIENT and not k.startswith(("SHABBODA_", "BOT_", "DB_", "ADMIN_", "AICALL_", "CONVERTER_", "AGZS_"))}
         e.update(BOT_TOKEN=env["AGZS_BOT_TOKEN"], ADMIN_IDS=env.get("AGZS_ADMIN_IDS", "8219891075"),
-                 DB_PATH=env.get("AGZS_DB_PATH") or os.path.join(env.get("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "agzs.db"))
+                 DB_PATH=env.get("AGZS_DB_PATH") or os.path.join(env.get("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "agzs.db"),
+                 OWNER_USERNAMES=env.get("AGZS_OWNER_USERNAMES", ""))
         out.append(("agzs", e))
     only = {x.strip() for x in env.get("RUN_ONLY", "").split(",") if x.strip()}
     if only:  # например RUN_ONLY=converter: остальные боты не запускаются (данные и код остаются)

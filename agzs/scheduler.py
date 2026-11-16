@@ -49,8 +49,8 @@ def due_jobs(dt, settings, sent):
     return out
 
 
-async def _send_admins(bot, text, **kw):
-    for a in core.db.staff_ids("admin"):
+async def _send_admins(bot, text, perm="finance", **kw):
+    for a in core.ids_with(perm):
         try:
             await bot.send_message(a, text, **kw)
         except Exception:
@@ -69,7 +69,7 @@ async def run_job(bot, job):
         await _send_admins(bot, "🗓 Итоги недели\n\n" + reports.finance_text(core.rows_for(s, e), label, s, e))
         data, name, _ = await reports.build_excel("month")
         from aiogram.types import BufferedInputFile
-        for a in core.db.staff_ids("admin"):
+        for a in core.ids_with("finance"):
             try:
                 await bot.send_document(a, BufferedInputFile(data, name), caption="📤 Сводная таблица за 30 дней (автоотчёт)")
             except Exception:
@@ -79,7 +79,7 @@ async def run_job(bot, job):
         prev = (first - timedelta(days=1)).replace(day=1)
         s, e = calc.month_bounds(prev.year, prev.month)
         due = int(core.cfg()["tax_due_day"])
-        await _send_admins(bot, f"⏰ Напоминание: до {due} числа нужно сдать НДС и акциз за {extras.MONTHS[prev.month - 1]} {prev.year}.\n\n" + extras.tax_text(s, e, f"{extras.MONTHS[prev.month - 1]} {prev.year}"))
+        await _send_admins(bot, perm="accounting", text=f"⏰ Напоминание: до {due} числа нужно сдать НДС и акциз за {extras.MONTHS[prev.month - 1]} {prev.year}.\n\n" + extras.tax_text(s, e, f"{extras.MONTHS[prev.month - 1]} {prev.year}"))
     elif job == "stock_alert":
         st, fc = core.stock_forecast()
         await reports.alert_stock(bot, st, fc)
@@ -93,13 +93,13 @@ async def run_job(bot, job):
             except Exception:
                 pass
         if ops:
-            await _send_admins(bot, f"⏰ Отчёт за {t.strftime('%d.%m')} ещё не сдан. Напоминание операторам отправлено ({len(ops)}).")
+            await _send_admins(bot, f"⏰ Отчёт за {t.strftime('%d.%m')} ещё не сдан. Напоминание операторам отправлено ({len(ops)}).", perm="approve")
     elif job == "backup":
         from aiogram.types import FSInputFile
         with tempfile.TemporaryDirectory() as wd:
             path = os.path.join(wd, f"agzs_backup_{t.isoformat()}.db")
             core.db.backup_to(path)
-            for a in core.db.staff_ids("admin"):
+            for a in core.ids_with("staff"):
                 try:
                     await bot.send_document(a, FSInputFile(path), caption="💾 Резервная копия базы АГЗС (храните в надёжном месте)")
                 except Exception:

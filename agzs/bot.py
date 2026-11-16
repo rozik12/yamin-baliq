@@ -7,6 +7,7 @@ from datetime import timedelta
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram import BaseMiddleware
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -20,7 +21,7 @@ import core
 import export
 import texts
 from calc import PAY_KEYS, PAY_NAMES, fnum, parse_date, parse_num
-from core import cfg, is_admin, role, today, uname
+from core import can, cfg, is_admin, role, today, uname
 from db import now
 from reports import alert_stock, build_excel, finance_text  # noqa: F401
 
@@ -62,10 +63,13 @@ def ikb(rows):
 
 
 def menu(uid):
-    if is_admin(uid):
-        rows = [[t(uid, "btn_shift"), B_STOCK], [B_FIN, B_GRAPH], [B_XLS, B_SHIFTS], [B_ACC, B_SET], [B_STAFF]]
-    else:
+    """Кнопки по правам должности: оператор видит своё, владелец и остальные — по своим правам."""
+    if role(uid) == "operator":
         rows = [[t(uid, "btn_shift"), t(uid, "btn_mine")], [t(uid, "btn_lang")]]
+    else:
+        items = [t(uid, "btn_shift")] * can(uid, "shift") + [B_STOCK] * can(uid, "stock_view") + [B_FIN, B_GRAPH, B_XLS] * can(uid, "finance") \
+            + [B_SHIFTS] * can(uid, "shifts_view") + [B_ACC] * can(uid, "accounting") + [B_SET] * can(uid, "settings") + [B_STAFF] * can(uid, "staff")
+        rows = [items[k:k + 2] for k in range(0, len(items), 2)] or [[t(uid, "btn_lang")]]
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in r] for r in rows], resize_keyboard=True)
 
 
@@ -75,21 +79,26 @@ def menu(uid):
 async def start(m: Message, state: FSMContext):
     await state.clear()
     uid = m.from_user.id
+    core.touch_user(m.from_user)  # запоминаем человека и выдаём заранее назначенную должность по @нику
     parts = (m.text or "").split(maxsplit=1)
-    if len(parts) > 1 and parts[1].startswith(("op_", "adm_")) and not is_admin(uid):
+    if len(parts) > 1 and parts[1].startswith(("p_", "op_", "adm_")) and not is_admin(uid):
         r = core.db.redeem(parts[1].split("_", 1)[1], uid, uname(m.from_user))
         if not r:
             return await m.answer(t(uid, "invite_bad"))
-        core.db.log(uname(m.from_user), "invite_used", r)
-        for a in core.db.staff_ids("admin"):
+        core.db.log(uname(m.from_user), "invite_used", core.POSITIONS.get(r, r))
+        for a in core.ids_with("staff"):
             try:
-                await m.bot.send_message(a, f"👤 Новый {'оператор' if r == 'operator' else 'бухгалтер'}: {uname(m.from_user)} ({uid})")
+                await m.bot.send_message(a, f"👤 Новый сотрудник: {uname(m.from_user)} ({uid}) — {core.POSITIONS.get(r, r)}")
             except Exception:
                 pass
     r = role(uid)
     if not r:
         return await m.answer(t(uid, "no_access"))
-    await m.answer(t(uid, "welcome_admin" if r == "admin" else "welcome_op"), reply_markup=menu(uid))
+    if r in ("admin", "operator"):
+        text = t(uid, "welcome_admin" if r == "admin" else "welcome_op")
+    else:
+        text = f"Здравствуйте! Ваша должность — {core.POSITIONS[r]}. Доступно: {core.POS_INFO[r]}."
+    await m.answer(text, reply_markup=menu(uid))
 
 
 @router.message(F.text.in_(V_LANG))
@@ -105,47 +114,6 @@ async def lang_set(c: CallbackQuery):
         core.db.set_lang(uid, c.data[3:])
         await c.message.answer(t(uid, "lang_set"), reply_markup=menu(uid))
     await c.answer()
-
-
-@router.message(F.text == B_STAFF)
-async def staff(m: Message):
-    if not is_admin(m.from_user.id):
-        return
-    us = core.db.users()
-    lines = ["👥 Персонал:"] + [f"• {u['name']} — {'оператор' if u['role'] == 'operator' else 'бухгалтер'} ({u['id']})" for u in us]
-    lines.append(f"Владельцы (из настроек сервера): {', '.join(map(str, sorted(ADMINS)))}")
-    rows = [[("➕ Ссылка для оператора", "st:op"), ("➕ Ссылка для бухгалтера", "st:adm")]]
-    rows += [[(f"🗑 Убрать {u['name']}", f"st:rm:{u['id']}")] for u in us]
-    await m.answer("\n".join(lines), reply_markup=ikb(rows))
-
-
-@router.callback_query(F.data.startswith("st:"))
-async def staff_cb(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
-        return await c.answer()
-    act = c.data[3:]
-    if act in ("op", "adm"):
-        me = await c.bot.get_me()
-        code = core.db.new_invite("operator" if act == "op" else "admin")
-        core.db.log(uname(c.from_user), "invite_created", act)
-        await c.message.answer(f"Отправьте эту одноразовую ссылку:\nhttps://t.me/{me.username}?start={act}_{code}")
-    elif act.startswith("rm:"):
-        core.db.remove_user(int(act[3:]))
-        core.db.log(uname(c.from_user), "staff_removed", act[3:])
-        await c.message.edit_text("Убрано.")
-    await c.answer()
-
-
-@router.message(Command("addoperator"))
-async def add_operator(m: Message):
-    if not is_admin(m.from_user.id):
-        return
-    p = (m.text or "").split(maxsplit=2)
-    if len(p) < 2 or not p[1].isdigit():
-        return await m.answer("Формат: /addoperator 123456789 Имя")
-    core.db.set_user(int(p[1]), p[2] if len(p) > 2 else p[1], "operator")
-    core.db.log(uname(m.from_user), "operator_added", p[1])
-    await m.answer("✅ Оператор добавлен.")
 
 
 # ---------- сменный отчёт (мастер ввода)
@@ -210,7 +178,7 @@ async def ask(target, state, uid):
 
 @router.message(F.text.in_(V_SHIFT))
 async def shift_start(m: Message, state: FSMContext):
-    if not role(m.from_user.id):
+    if not can(m.from_user.id, "shift"):
         return
     await state.clear()
     await state.set_state(Shift.step)
@@ -327,7 +295,7 @@ async def finish_wizard(target, state, uid):
     data = await state.get_data()
     d = data["d"]
     warns = [] if data.get("edit") else meter_warnings(d, data["prev"], uid)
-    await target.answer(shift_summary(d, is_admin(uid), uid) + ("\n\n" + "\n".join(warns) if warns else ""),
+    await target.answer(shift_summary(d, can(uid, "finance"), uid) + ("\n\n" + "\n".join(warns) if warns else ""),
                         reply_markup=ikb([[(t(uid, "b_save"), "sh:@save"), (t(uid, "b_redo"), "sh:@redo")], [(t(uid, "b_cancel"), "sh:@cancel")]]))
 
 
@@ -375,7 +343,7 @@ async def shift_button(c: CallbackQuery, state: FSMContext):
     uid = c.from_user.id
     raw = c.data[3:]
     await c.answer()
-    if not role(uid):
+    if not (can(uid, "shift") or can(uid, "approve")):
         return
     if raw == "@cancel":
         await state.clear()
@@ -408,18 +376,18 @@ async def save_shift(c: CallbackQuery, state: FSMContext):
         core.db.log(uname(c.from_user), "shift_edited", f"№{edit}")
         sid = edit
     else:
-        sid = core.db.add_shift(uid, uname(c.from_user), d, d["exps"], status="approved" if is_admin(uid) else "pending")
+        sid = core.db.add_shift(uid, uname(c.from_user), d, d["exps"], status="approved" if can(uid, "approve") else "pending")
         core.db.log(uname(c.from_user), "shift_added", f"№{sid} {d['date']}")
-    await c.message.edit_text(shift_summary(d, is_admin(uid), uid) + "\n\n" + t(uid, "s_saved", id=sid))
+    await c.message.edit_text(shift_summary(d, can(uid, "finance"), uid) + "\n\n" + t(uid, "s_saved", id=sid))
     st, fc = core.stock_forecast()
     note = f"⛽ Остаток газа сейчас: {fnum(st['liters'], 0)} л · {fnum(st['kg'], 0)} кг" + (f" · хватит примерно на {fc['days_left']:.1f} дн." if fc["days_left"] else "")
-    await c.message.answer(note if is_admin(uid) else t(uid, "s_thanks"), reply_markup=menu(uid))
+    await c.message.answer(note if can(uid, "stock_view") else t(uid, "s_thanks"), reply_markup=menu(uid))
     if edit:
         return
-    for a in core.db.staff_ids("admin") - ({uid} if is_admin(uid) else set()):
+    for a in core.ids_with("approve") - {uid}:
         try:
-            await c.bot.send_message(a, f"📥 Новая смена №{sid} от {uname(c.from_user)}\n\n{shift_summary(d, True, a)}\n\n{note}",
-                                     reply_markup=approval_kb(sid) if not is_admin(uid) else None)
+            await c.bot.send_message(a, f"📥 Новая смена №{sid} от {uname(c.from_user)}\n\n{shift_summary(d, can(a, "finance"), a)}\n\n{note}",
+                                     reply_markup=approval_kb(sid) if not can(uid, "approve") else None)
             for fid in d.get("photos", [])[:6]:
                 await c.bot.send_photo(a, fid, caption=f"Смена №{sid}")
         except Exception:
@@ -429,7 +397,7 @@ async def save_shift(c: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("ap:"))
 async def approve_cb(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "approve"):
         return await c.answer()
     _, sid, act = c.data.split(":")
     s = core.db.shift(int(sid))
@@ -450,7 +418,7 @@ async def approve_cb(c: CallbackQuery):
 @router.callback_query(F.data.startswith("ed:"))
 async def edit_cb(c: CallbackQuery, state: FSMContext):
     uid = c.from_user.id
-    if not is_admin(uid):
+    if not can(uid, "approve"):
         return await c.answer()
     s = core.db.shift(int(c.data[3:]))
     await c.answer()
@@ -471,7 +439,7 @@ async def edit_cb(c: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == B_STOCK)
 async def stock(m: Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
+    if not can(m.from_user.id, "stock_view"):
         return
     await state.clear()
     c = cfg()
@@ -497,7 +465,7 @@ async def stock(m: Message, state: FSMContext):
 
 @router.callback_query(F.data == "sk:set")
 async def stock_set(c: CallbackQuery, state: FSMContext):
-    if is_admin(c.from_user.id):
+    if can(c.from_user.id, "stock_edit"):
         await state.set_state(Stock.liters)
         await c.message.answer("Сколько литров газа в резервуаре сейчас (по замеру)?")
     await c.answer()
@@ -539,7 +507,7 @@ async def stock_save(target, state, user, density):
 
 @router.callback_query(F.data.startswith("sd:"))
 async def stock_density_cb(c: CallbackQuery, state: FSMContext):
-    if is_admin(c.from_user.id) and "liters" in await state.get_data():
+    if can(c.from_user.id, "stock_edit") and "liters" in await state.get_data():
         await stock_save(c.message, state, c.from_user, float(c.data[3:]))
     await c.answer()
 
@@ -559,14 +527,14 @@ PERIODS = [("Сегодня", "today"), ("Вчера", "yday"), ("Неделя",
 
 @router.message(F.text == B_FIN)
 async def fin_menu(m: Message):
-    if is_admin(m.from_user.id):
+    if can(m.from_user.id, "finance"):
         await m.answer("За какой период показать финансы?", reply_markup=ikb([[(n, f"fp:{c}") for n, c in PERIODS[:3]], [(n, f"fp:{c}") for n, c in PERIODS[3:]],
                                                                                [("↔️ Неделя к неделе", "cmp:week"), ("↔️ Месяц к месяцу", "cmp:month")]]))
 
 
 @router.callback_query(F.data.startswith("fp:"))
 async def fin_cb(c: CallbackQuery):
-    if is_admin(c.from_user.id):
+    if can(c.from_user.id, "finance"):
         s, e, label = core.period_range(c.data[3:])
         await c.message.answer(finance_text(core.rows_for(s, e), label, s, e))
     await c.answer()
@@ -574,7 +542,7 @@ async def fin_cb(c: CallbackQuery):
 
 @router.message(F.text == B_GRAPH)
 async def graph_menu(m: Message):
-    if not is_admin(m.from_user.id):
+    if not can(m.from_user.id, "finance"):
         return
     await m.answer("📈 Какой график построить?", reply_markup=ikb([[(name, f"gk:{k}")] for k, name in charts.KINDS.items()]))
 
@@ -586,7 +554,7 @@ async def graph_cmd(m: Message):
 
 @router.callback_query(F.data.startswith("gk:"))
 async def graph_kind(c: CallbackQuery):
-    if is_admin(c.from_user.id):
+    if can(c.from_user.id, "finance"):
         k = c.data[3:]
         await c.message.answer(f"«{charts.KINDS[k]}»: за какой период?",
                                reply_markup=ikb([[("За неделю", f"gp:{k}:week"), ("За месяц", f"gp:{k}:month"), ("За всё время", f"gp:{k}:all")]]))
@@ -595,7 +563,7 @@ async def graph_kind(c: CallbackQuery):
 
 @router.callback_query(F.data.startswith("gp:"))
 async def graph_make(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "finance"):
         return await c.answer()
     _, kind, code = c.data.split(":")
     await c.answer("Строю график…")
@@ -617,7 +585,7 @@ async def graph_make(c: CallbackQuery):
 
 @router.message(F.text == B_XLS)
 async def xls_menu(m: Message):
-    if is_admin(m.from_user.id):
+    if can(m.from_user.id, "finance"):
         await m.answer("Выгрузить сводную таблицу в Excel:", reply_markup=ikb([[("За всё время", "xl:all"), ("За 30 дней", "xl:month")]]))
 
 
@@ -628,7 +596,7 @@ async def export_cmd(m: Message):
 
 @router.callback_query(F.data.startswith("xl:"))
 async def xls_make(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "finance"):
         return await c.answer()
     await c.answer("Готовлю файл…")
     data, name, label = await build_excel(c.data[3:])
@@ -639,7 +607,7 @@ async def xls_make(c: CallbackQuery):
 
 @router.message(F.text == B_SHIFTS)
 async def shifts_list(m: Message):
-    if not is_admin(m.from_user.id):
+    if not can(m.from_user.id, "shifts_view"):
         return
     sh = core.db.shifts()[-10:][::-1]
     if not sh:
@@ -655,7 +623,7 @@ async def shifts_list(m: Message):
 
 @router.callback_query(F.data.startswith("ds:"))
 async def shift_delete(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "approve"):
         return await c.answer()
     sid = int(c.data[3:])
     await c.answer()
@@ -665,7 +633,7 @@ async def shift_delete(c: CallbackQuery):
 
 @router.callback_query(F.data.startswith("dy:"))
 async def shift_delete_yes(c: CallbackQuery):
-    if is_admin(c.from_user.id):
+    if can(c.from_user.id, "approve"):
         sid = int(c.data[3:])
         s = core.db.shift(sid)
         n = core.db.delete_shift(sid)
@@ -723,14 +691,14 @@ def settings_kb():
 
 @router.message(F.text == B_SET)
 async def settings(m: Message, state: FSMContext):
-    if is_admin(m.from_user.id):
+    if can(m.from_user.id, "settings"):
         await state.clear()
         await m.answer(settings_text(), reply_markup=settings_kb())
 
 
 @router.callback_query(F.data.startswith("se:"))
 async def settings_cb(c: CallbackQuery, state: FSMContext):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "settings"):
         return await c.answer()
     k = c.data[3:]
     await c.answer()
@@ -764,7 +732,7 @@ def parse_setting(k, text):
 
 @router.message(SetVal.value, ~F.text.in_(MENU))
 async def settings_value(m: Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
+    if not can(m.from_user.id, "settings"):
         return
     k = (await state.get_data())["key"]
     v = parse_setting(k, m.text)
@@ -791,13 +759,28 @@ async def on_error(event):
     return True
 
 
+class TouchMiddleware(BaseMiddleware):
+    """Каждое сообщение: запоминаем пользователя и выдаём заранее назначенную должность."""
+
+    async def __call__(self, handler, event, data):
+        try:
+            core.touch_user(getattr(event, "from_user", None))
+        except Exception:
+            log.exception("touch_user failed")
+        return await handler(event, data)
+
+
 async def main():
     import extras
     import scheduler
+    import staff
     logging.basicConfig(level=logging.INFO)
     proxy = os.getenv("HTTPS_PROXY") if os.getenv("USE_PROXY") else None
     bot = Bot(os.environ["BOT_TOKEN"], session=AiohttpSession(proxy=proxy) if proxy else None, default=DefaultBotProperties(parse_mode=None))
     dp = Dispatcher(storage=MemoryStorage())
+    dp.message.outer_middleware(TouchMiddleware())
+    dp.callback_query.outer_middleware(TouchMiddleware())
+    dp.include_router(staff.router)
     dp.include_router(extras.router)  # раньше общего «fallback»
     dp.include_router(router)
     asyncio.create_task(scheduler.run(bot))

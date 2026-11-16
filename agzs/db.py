@@ -29,6 +29,8 @@ class DB:
         CREATE TABLE IF NOT EXISTS collections(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, ts TEXT, amount REAL, note TEXT, user_name TEXT);
         CREATE TABLE IF NOT EXISTS fixed_expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount REAL);
         CREATE TABLE IF NOT EXISTS langs(id INTEGER PRIMARY KEY, lang TEXT);
+        CREATE TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY, username TEXT, name TEXT, ts TEXT);
+        CREATE TABLE IF NOT EXISTS grants(username TEXT PRIMARY KEY, role TEXT, created_by TEXT, ts TEXT);
         """)
         for table, col, ddl in (("shifts", "status", "TEXT DEFAULT 'approved'"), ("shifts", "photos", "TEXT DEFAULT ''"), ("shifts", "arr_note", "TEXT DEFAULT ''"),
                                 ("adjustments", "expected_l", "REAL"), ("adjustments", "expected_kg", "REAL")):
@@ -213,3 +215,41 @@ class DB:
         with dst:
             self.c.backup(dst)
         dst.close()
+
+    # --- кто писал боту и назначения по @нику (человек получает должность, когда впервые откроет бота)
+    def touch(self, uid, username, name):
+        self.c.execute("INSERT INTO seen(id,username,name,ts) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username, name=excluded.name, ts=excluded.ts",
+                       (uid, (username or "").lower(), name, now().isoformat(timespec="seconds")))
+        self.c.commit()
+
+    def seen_by_username(self, username):
+        r = self.c.execute("SELECT * FROM seen WHERE username=?", ((username or "").lower().lstrip("@"),)).fetchone()
+        return dict(r) if r else None
+
+    def seen_user(self, uid):
+        r = self.c.execute("SELECT * FROM seen WHERE id=?", (uid,)).fetchone()
+        return dict(r) if r else None
+
+    def add_grant(self, username, role, created_by=""):
+        self.c.execute("INSERT INTO grants(username,role,created_by,ts) VALUES(?,?,?,?) ON CONFLICT(username) DO UPDATE SET role=excluded.role",
+                       (username.lower().lstrip("@"), role, created_by, now().isoformat(timespec="seconds")))
+        self.c.commit()
+
+    def pop_grant(self, username):
+        key = (username or "").lower().lstrip("@")
+        r = self.c.execute("SELECT * FROM grants WHERE username=?", (key,)).fetchone()
+        if r:
+            self.c.execute("DELETE FROM grants WHERE username=?", (key,))
+            self.c.commit()
+        return dict(r) if r else None
+
+    def grants(self):
+        return [dict(r) for r in self.c.execute("SELECT * FROM grants ORDER BY username")]
+
+    def remove_grant(self, username):
+        self.c.execute("DELETE FROM grants WHERE username=?", (username.lower().lstrip("@"),))
+        self.c.commit()
+
+    def get_user(self, uid):
+        r = self.c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        return dict(r) if r else None

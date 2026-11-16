@@ -254,14 +254,15 @@ class Owner(unittest.TestCase):
         run(bot.shift_delete_yes(c2))  # оператору нельзя
 
     def test_staff_invites(self):
-        c = self.e.cb(OWNER, "st:op")
-        run(bot.staff_cb(c))
+        import staff
+        c = self.e.cb(OWNER, "sf:lp:operator")
+        run(staff.staff_cb(c, self.e.state(OWNER)))
         link = c.message.answer.call_args[0][0]
-        code = link.split("start=op_")[1]
-        m = self.e.msg(777, f"/start op_{code}")
+        code = link.split("start=p_")[1].split()[0]
+        m = self.e.msg(777, f"/start p_{code}")
         run(bot.start(m, self.e.state(777)))
         self.assertEqual(core.db.role_of(777), "operator")
-        m2 = self.e.msg(778, f"/start op_{code}")
+        m2 = self.e.msg(778, f"/start p_{code}")
         run(bot.start(m2, self.e.state(778)))
         self.assertIsNone(core.db.role_of(778))
 

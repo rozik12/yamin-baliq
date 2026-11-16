@@ -59,7 +59,7 @@ async def alert_stock(bot, st, fc):
     if c["order_days"] > 0 and fc["days_left"] is not None and fc["days_left"] < c["order_days"]:
         msgs.append(f"🚨 Газа хватит примерно на {fc['days_left']:.1f} дн. (средний пролив {fnum(fc['avg_l'])} л в день). Закажите газ — см. «💼 Бухгалтерия → 🔮 Прогноз и заявка».")
     for text in msgs:
-        for a in core.db.staff_ids("admin"):
+        for a in core.ids_with("stock_view"):
             try:
                 await bot.send_message(a, text)
             except Exception:

@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 import calc
 import core
 from calc import fnum, parse_num
-from core import is_admin, today, uname
+from core import can, today, uname
 
 router = Router()
 B_ACC = "💼 Бухгалтерия"
@@ -55,7 +55,7 @@ def split_amount(text):
 
 @router.message(F.text == B_ACC)
 async def acc_menu(m: Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
+    if not can(m.from_user.id, "accounting"):
         return
     await state.clear()
     await m.answer("💼 Бухгалтерия", reply_markup=ikb([
@@ -67,7 +67,7 @@ async def acc_menu(m: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("ac:"))
 async def acc_cb(c: CallbackQuery, state: FSMContext):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "accounting"):
         return await c.answer()
     await c.answer()
     act = c.data[3:]
@@ -119,7 +119,7 @@ def tax_text(start, end, title):
 
 @router.callback_query(F.data.startswith("tx:"))
 async def tax_month(c: CallbackQuery):
-    if is_admin(c.from_user.id):
+    if can(c.from_user.id, "accounting"):
         y, mth = map(int, c.data[3:].split("-"))
         s, e = calc.month_bounds(y, mth)
         await c.message.answer(tax_text(s, e, f"{MONTHS[mth - 1]} {y}"))
@@ -128,7 +128,7 @@ async def tax_month(c: CallbackQuery):
 
 @router.callback_query(F.data.startswith("tq:"))
 async def tax_quarter(c: CallbackQuery):
-    if is_admin(c.from_user.id):
+    if can(c.from_user.id, "accounting"):
         y, q = map(int, c.data[3:].split("-"))
         s, _ = calc.month_bounds(y, 3 * q - 2)
         _, e = calc.month_bounds(y, 3 * q)
@@ -163,7 +163,7 @@ async def supplier(msg):
 
 @router.callback_query(F.data == "pay:new")
 async def pay_new(c: CallbackQuery, state: FSMContext):
-    if is_admin(c.from_user.id):
+    if can(c.from_user.id, "accounting"):
         await state.set_state(Pay.line)
         await c.message.answer("Напишите сумму оплаты и, если хотите, комментарий: «2000000 за цистерну».")
     await c.answer()
@@ -171,7 +171,7 @@ async def pay_new(c: CallbackQuery, state: FSMContext):
 
 @router.message(Pay.line)
 async def pay_line(m: Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
+    if not can(m.from_user.id, "accounting"):
         return
     r = split_amount(m.text)
     if not r:
@@ -199,7 +199,7 @@ async def cash(msg):
 
 @router.callback_query(F.data == "col:new")
 async def col_new(c: CallbackQuery, state: FSMContext):
-    if is_admin(c.from_user.id):
+    if can(c.from_user.id, "accounting"):
         await state.set_state(Coll.line)
         await c.message.answer("Напишите сумму, которую забрали из кассы, и комментарий: «5000000 сдано в банк».")
     await c.answer()
@@ -207,7 +207,7 @@ async def col_new(c: CallbackQuery, state: FSMContext):
 
 @router.message(Coll.line)
 async def col_line(m: Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
+    if not can(m.from_user.id, "accounting"):
         return
     r = split_amount(m.text)
     if not r:
@@ -234,7 +234,7 @@ async def fixed(msg):
 
 @router.callback_query(F.data.startswith("fx:"))
 async def fix_cb(c: CallbackQuery, state: FSMContext):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "accounting"):
         return await c.answer()
     act = c.data[3:]
     if act == "new":
@@ -249,7 +249,7 @@ async def fix_cb(c: CallbackQuery, state: FSMContext):
 
 @router.message(Fix.line)
 async def fix_line(m: Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
+    if not can(m.from_user.id, "accounting"):
         return
     mm = re.match(r"^(.*?)\s*((?:\d[\d.,]*)(?:\s\d{3})*)$", (m.text or "").strip())
     amount = parse_num(mm.group(2)) if mm else None
@@ -269,7 +269,7 @@ async def ops_menu(msg):
 
 @router.callback_query(F.data.startswith("op:"))
 async def ops_cb(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "accounting"):
         return await c.answer()
     s, e, label = core.period_range(c.data[3:])
     stats = calc.operator_stats(core.db.shifts(s, e), core.db.expenses_map(), core.cfg())
@@ -333,7 +333,7 @@ def arrow(p):
 
 @router.callback_query(F.data.startswith("cmp:"))
 async def compare_cb(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
+    if not can(c.from_user.id, "finance"):
         return await c.answer()
     n = 7 if c.data[4:] == "week" else 30
     t = today()
