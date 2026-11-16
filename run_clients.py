@@ -1,10 +1,10 @@
 """Запускает бота ресторана и, если задан SHABBODA_BOT_TOKEN, бота второго клиента в одном сервисе.
-Если задан CONVERTER_BOT_TOKEN, ещё и бот-конвертер документов (converter/).
+Если задан CONVERTER_BOT_TOKEN, ещё и бот-конвертер документов (converter/); AGZS_BOT_TOKEN — бот-бухгалтер АГЗС (agzs/).
 Если задан AICALL_TG_SESSION или AICALL_PHONE (первый вход), ещё и голосового ИИ для звонков в Telegram (aicall/, переменные AICALL_*).
 
 У второго бота свои база, токен, админы и карта: берутся из переменных SHABBODA_*;
 всё остальное из окружения первого (карта, курьеры, Яндекс, онлайн-оплата) ему не передаётся.
-Переменная RUN_ONLY (имена через запятую: main, shabboda, converter, aicall) оставляет работать только перечисленных.
+Переменная RUN_ONLY (имена через запятую: main, shabboda, converter, agzs, aicall) оставляет работать только перечисленных.
 Упавший бот перезапускается, второй от этого не страдает.
 """
 import os
@@ -45,6 +45,12 @@ def specs(env=None):
             if env.get(k):
                 e[k] = env[k]
         out.append(("converter", e))
+    if env.get("AGZS_BOT_TOKEN"):
+        # Бот-бухгалтер АГЗС (agzs/): токен, владельцы и база свои, остальное из окружения не передаём.
+        e = {k: v for k, v in env.items() if k not in PER_CLIENT and not k.startswith(("SHABBODA_", "BOT_", "DB_", "ADMIN_", "AICALL_", "CONVERTER_", "AGZS_"))}
+        e.update(BOT_TOKEN=env["AGZS_BOT_TOKEN"], ADMIN_IDS=env.get("AGZS_ADMIN_IDS", "8219891075"),
+                 DB_PATH=env.get("AGZS_DB_PATH") or os.path.join(env.get("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "agzs.db"))
+        out.append(("agzs", e))
     only = {x.strip() for x in env.get("RUN_ONLY", "").split(",") if x.strip()}
     if only:  # например RUN_ONLY=converter: остальные боты не запускаются (данные и код остаются)
         out = [(n, e) for n, e in out if n in only]
@@ -73,7 +79,7 @@ def main():
                     if time.time() - last.get(name, 0) < 10:
                         time.sleep(5)
                 last[name] = time.time()
-                script = {"aicall": os.path.join("aicall", "app.py"), "converter": os.path.join("converter", "bot.py")}.get(name, "bot.py")
+                script = {"aicall": os.path.join("aicall", "app.py"), "converter": os.path.join("converter", "bot.py"), "agzs": os.path.join("agzs", "bot.py")}.get(name, "bot.py")
                 procs[name] = subprocess.Popen([sys.executable, script], cwd=HERE, env=env)
         time.sleep(3)
     for p in procs.values():

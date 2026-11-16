@@ -80,5 +80,19 @@ class RunOnly(unittest.TestCase):
         self.assertEqual(names, ["main", "converter"])
 
 
+class AgzsSpec(unittest.TestCase):
+    def test_agzs_is_isolated_and_optional(self):
+        env = {"BOT_TOKEN": "A", "CARD_NUMBER": "5614", "CONVERTER_BOT_TOKEN": "C", "AGZS_BOT_TOKEN": "G", "AGZS_ADMIN_IDS": "1,2",
+               "RAILWAY_VOLUME_MOUNT_PATH": "/vol", "AICALL_API_KEY": "secret"}
+        s = dict(run_clients.specs(env))
+        g = s["agzs"]
+        self.assertEqual((g["BOT_TOKEN"], g["ADMIN_IDS"], g["DB_PATH"]), ("G", "1,2", "/vol/agzs.db"))
+        for k in ("CARD_NUMBER", "CONVERTER_BOT_TOKEN", "AGZS_BOT_TOKEN", "AICALL_API_KEY", "AGZS_ADMIN_IDS"):
+            self.assertNotIn(k, g)
+        self.assertNotIn("agzs", dict(run_clients.specs({"BOT_TOKEN": "A"})))
+        self.assertEqual([n for n, _ in run_clients.specs(dict(env, RUN_ONLY="converter,agzs"))], ["converter", "agzs"])
+        self.assertEqual(g["PYTHONUNBUFFERED"] if "PYTHONUNBUFFERED" in g else "", "")
+
+
 if __name__ == "__main__":
     unittest.main()

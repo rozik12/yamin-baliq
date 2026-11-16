@@ -11,6 +11,8 @@
 
 Бот-конвертер: PDF, Word, Excel (в т.ч. .xls), CSV, TXT, картинки; 3 языка; админ 8219891075 (`CONVERTER_ADMIN_IDS`), лимит 30 конвертаций в сутки на человека (`CONVERTER_DAILY_LIMIT`), файл до 15 МБ (`CONVERTER_MAX_MB`). Старые .doc/.ppt не поддерживаются без LibreOffice. Тесты: `tests/test_converter.py`, `tests/test_converter_bot.py`.
 
+Бот-бухгалтер АГЗС @navrozpropanbot (`agzs/`, процесс `agzs` в сервисе `bot`, переменные `AGZS_BOT_TOKEN`, `AGZS_ADMIN_IDS`; база `<том>/agzs.db`). Сейчас в `RUN_ONLY` указано `converter,agzs`. Модули: `calc.py` (налоги, прибыль, остаток газа), `db.py`, `charts.py` (matplotlib), `export.py` (Excel), `bot.py`. Владелец 8219891075; операторы и бухгалтеры добавляются ссылкой-приглашением. Интерфейс только на русском. Тесты: `tests/test_agzs_*.py`.
+
 ## Что в репозитории
 
 | Папка | Что это | Сервис Railway |
