@@ -11,7 +11,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pyinstaller "pymupdf==1.24.14" "opencv-python-headless==4.10.0.84" "numpy<2.1" pdf2docx python-docx openpyxl xlrd reportlab Pillow pillow-heif
+      - run: pip install pyinstaller "pymupdf==1.24.14" "opencv-python-headless==4.10.0.84" "numpy<2.1" pdf2docx python-docx openpyxl xlrd xlwt python-pptx reportlab Pillow pillow-heif
       - run: >
           pyinstaller --onefile --windowed --name Konverter
           --paths converter --add-data "converter/fonts;fonts"
@@ -29,6 +29,16 @@ jobs:
           Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli","out\t.pdf","png","out"
           Get-ChildItem out | Format-Table Name, Length
           foreach ($f in "t.pdf","t.docx","t.png") { if (-not (Test-Path "out\$f") -or (Get-Item "out\$f").Length -eq 0) { throw "missing $f" } }
+      - name: old formats with LibreOffice (doc, xls, ppt)
+        shell: pwsh
+        run: |
+          choco install libreoffice-fresh -y --no-progress | Out-Null
+          python -c "import docx,openpyxl,pptx; d=docx.Document(); d.add_paragraph('Hello'); d.save('a.docx'); wb=openpyxl.Workbook(); wb.active.append(['A',1]); wb.save('b.xlsx'); p=pptx.Presentation(); s=p.slides.add_slide(p.slide_layouts[0]); s.shapes.title.text='Hi'; p.save('c.pptx')"
+          Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli","a.docx","doc","lo"
+          Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli","b.xlsx","xls","lo"
+          Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli","c.pptx","ppt","lo"
+          Get-ChildItem lo | Format-Table Name, Length
+          foreach ($f in "a.doc","b.xls","c.ppt") { if (-not (Test-Path "lo\$f") -or (Get-Item "lo\$f").Length -eq 0) { throw "missing $f" } }
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: windows-converter

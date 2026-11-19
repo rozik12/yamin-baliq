@@ -315,6 +315,30 @@ def sheets_to_xlsx(sheets, out):
     wb.save(str(out))
 
 
+def sheets_to_xls(sheets, out):
+    """Старый Excel (.xls) без LibreOffice: лимиты формата — 65536 строк, 256 столбцов, 32767 знаков в ячейке."""
+    import xlwt
+    wb = xlwt.Workbook(encoding="utf-8")
+    used = set()
+    for name, rows in sheets:
+        title = "".join(ch for ch in name if ch not in '[]:*?/\\')[:31] or "Sheet"
+        n, base = 1, title
+        while title.lower() in used:
+            n += 1
+            title = f"{base[:28]}_{n}"
+        used.add(title.lower())
+        ws = wb.add_sheet(title)
+        for r, row in enumerate(rows[:65536]):
+            for c, v in enumerate(row[:256]):
+                v = _num(v) if isinstance(v, str) else v
+                if isinstance(v, str):
+                    v = v[:32767]
+                ws.write(r, c, v)
+    if not used:
+        raise ConvertError("empty")
+    wb.save(str(out))
+
+
 def _num(v):
     """«1234» и «12,5» становятся числами, остальное остаётся текстом."""
     s = v.strip().replace(" ", "").replace(" ", "")
@@ -814,7 +838,7 @@ def _from_sheets(loader_ext, fn):
 
 
 def _sheet_step(src_ext, dst):
-    fn = {"pdf": sheets_to_pdf, "docx": sheets_to_docx, "xlsx": sheets_to_xlsx, "csv": sheets_to_csv}[dst]
+    fn = {"pdf": sheets_to_pdf, "docx": sheets_to_docx, "xlsx": sheets_to_xlsx, "xls": sheets_to_xls, "csv": sheets_to_csv}[dst]
 
     def run(src, outdir):
         out = Path(outdir) / f"{Path(src).stem}_n.{dst}"
@@ -894,7 +918,7 @@ def build_edges():
     add("docx", "xlsx", lambda s, o: _docx_xlsx(s, o))
     add("docx", "txt", _n(docx_to_txt, "txt"))
     for se in ("xlsx", "xls", "csv"):
-        for dst in ("pdf", "docx", "xlsx", "csv"):
+        for dst in ("pdf", "docx", "xlsx", "xls", "csv"):
             if dst != se:
                 add(se, dst, _sheet_step(se, dst), 2 if dst == "pdf" else 1)
     add("txt", "pdf", _n(text_to_pdf, "pdf"), 2)
