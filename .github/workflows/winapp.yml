@@ -11,11 +11,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pyinstaller pymupdf pdf2docx python-docx openpyxl xlrd reportlab Pillow pillow-heif
+      - run: pip install pyinstaller "pymupdf==1.24.14" "opencv-python-headless==4.10.0.84" "numpy<2.1" pdf2docx python-docx openpyxl xlrd reportlab Pillow pillow-heif
       - run: >
           pyinstaller --onefile --windowed --name Konverter
           --paths converter --add-data "converter/fonts;fonts"
-          --collect-all pymupdf --collect-all pdf2docx --hidden-import converters
+          --hidden-import converters
+          --exclude-module matplotlib --exclude-module pandas --exclude-module scipy --exclude-module IPython
+          --exclude-module pytest --exclude-module setuptools --exclude-module pip --exclude-module onnxruntime
+          --exclude-module networkx --exclude-module numpy.f2py --exclude-module tkinter.test --exclude-module unittest
+          --exclude-module pydoc --exclude-module sqlite3 --exclude-module lib2to3
           winapp/app.py
       - name: smoke test
         shell: bash
