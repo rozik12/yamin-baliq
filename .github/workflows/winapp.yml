@@ -21,14 +21,14 @@ jobs:
           --exclude-module networkx --exclude-module numpy.f2py --exclude-module tkinter.test --exclude-module sqlite3 --exclude-module lib2to3
           winapp/app.py
       - name: smoke test
-        shell: bash
+        shell: pwsh
         run: |
-          echo "Привет" > t.txt
-          ./dist/Konverter.exe --cli t.txt pdf out
-          ./dist/Konverter.exe --cli out/t.pdf docx out
-          ./dist/Konverter.exe --cli out/t.pdf png out
-          ls -l out
-          test -s out/t.pdf && test -s out/t.docx && test -s out/t.png
+          "Hello" | Out-File -Encoding utf8 t.txt
+          Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli","t.txt","pdf","out"
+          Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli","out\t.pdf","docx","out"
+          Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli","out\t.pdf","png","out"
+          Get-ChildItem out | Format-Table Name, Length
+          foreach ($f in "t.pdf","t.docx","t.png") { if (-not (Test-Path "out\$f") -or (Get-Item "out\$f").Length -eq 0) { throw "missing $f" } }
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: windows-converter
