@@ -654,7 +654,7 @@ def lo_run(src, dst, outdir, timeout=120):
     fam = LO_FAMILY[Path(src).suffix.lstrip(".").lower()]
     src = Path(src)
     profile = Path(outdir) / f"lo_profile_{os.getpid()}"
-    cmd = [soffice(), f"-env:UserInstallation=file://{profile}", "--headless"]
+    cmd = [soffice(), f"-env:UserInstallation={Path(profile).resolve().as_uri()}", "--headless"]
     inf = LO_INFILTER.get(src.suffix.lstrip(".").lower())
     if inf:
         cmd.append(f"--infilter={inf}")

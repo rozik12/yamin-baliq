@@ -1,0 +1,30 @@
+name: windows-converter
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller pymupdf pdf2docx python-docx openpyxl xlrd reportlab Pillow pillow-heif
+      - run: >
+          pyinstaller --onefile --windowed --name Konverter
+          --paths converter --add-data "converter/fonts;fonts"
+          --collect-all pymupdf --collect-all pdf2docx --hidden-import converters
+          winapp/app.py
+      - name: smoke test
+        shell: bash
+        run: |
+          echo "Привет" > t.txt
+          ./dist/Konverter.exe --cli t.txt pdf out || true
+          ls out || true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-converter
+          name: Конвертер для Windows
+          files: dist/Konverter.exe
