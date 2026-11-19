@@ -769,6 +769,11 @@ OFFER = {
     "djvu": ["pdf", "png", "txt", "docx"],
     "xps": ["pdf", "docx", "png"],
 }
+# старые форматы Office (doc, xls, ppt) предлагаем из любого типа файла, если до них есть цепочка превращений
+for _cat in OFFER:
+    for _old in ("doc", "xls", "ppt"):
+        if _old not in OFFER[_cat]:
+            OFFER[_cat].append(_old)
 CATEGORY = {}
 for _e in "doc docx docm dot dotx dotm odt ott rtf".split():
     CATEGORY[_e] = "doc"

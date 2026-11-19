@@ -253,7 +253,13 @@ def run_gui():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == "--cli":  # проверка без окна: app --cli файл формат
+    if len(sys.argv) >= 3 and sys.argv[1] == "--targets":  # app --targets docx: что предложит список «Во что»
+        line = " ".join(f"{t}{'*' if lo else ''}" for t, lo in targets_with_lo(sys.argv[2]))
+        if len(sys.argv) > 3:
+            Path(sys.argv[3]).write_text(line, encoding="utf-8")
+        else:
+            print(line)
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--cli":  # проверка без окна: app --cli файл формат
         print(convert_one(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "."))
     else:
         run_gui()

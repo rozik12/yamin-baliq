@@ -41,6 +41,15 @@ jobs:
           foreach ($t in $tests) { Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli",$t[0],$t[1],"more" }
           Get-ChildItem more | Format-Table Name, Length
           foreach ($f in "m.pdf","m.xls","m.csv","m.jpg","t.txt","t.xlsx") { if (-not (Test-Path "more\$f") -or (Get-Item "more\$f").Length -eq 0) { throw "missing $f" } }
+      - name: list of formats contains old ones
+        shell: pwsh
+        run: |
+          foreach ($e in @(@("docx","doc"), @("xlsx","xls"), @("pptx","ppt"), @("pdf","doc"), @("png","doc"), @("xlsx","doc"), @("docx","xls"))) {
+            Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--targets",$e[0],"tg.txt"
+            $t = (Get-Content tg.txt -Raw)
+            Write-Host "$($e[0]) -> $t"
+            if (($t -split " ") -notcontains $e[1] -and ($t -split " ") -notcontains ($e[1] + "*")) { throw "$($e[0]) has no $($e[1])" }
+          }
       - name: old formats with LibreOffice (doc, xls, ppt)
         shell: pwsh
         run: |
