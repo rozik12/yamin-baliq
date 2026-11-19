@@ -29,6 +29,18 @@ jobs:
           Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli","out\t.pdf","png","out"
           Get-ChildItem out | Format-Table Name, Length
           foreach ($f in "t.pdf","t.docx","t.png") { if (-not (Test-Path "out\$f") -or (Get-Item "out\$f").Length -eq 0) { throw "missing $f" } }
+      - name: window opens and more formats work (no LibreOffice yet)
+        shell: pwsh
+        run: |
+          python -c "import docx,openpyxl; from PIL import Image; d=docx.Document(); d.add_paragraph('Hello'); d.save('m.docx'); wb=openpyxl.Workbook(); wb.active.append(['A',1]); wb.save('m.xlsx'); Image.new('RGB',(50,50),'red').save('m.png')"
+          $p = Start-Process -FilePath dist\Konverter.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "window closed by itself, exit code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          $tests = @(@("m.docx","pdf"), @("m.xlsx","pdf"), @("m.xlsx","xls"), @("m.xlsx","csv"), @("m.png","pdf"), @("m.png","jpg"), @("out\t.pdf","txt"), @("out\t.pdf","xlsx"))
+          foreach ($t in $tests) { Start-Process -Wait -FilePath dist\Konverter.exe -ArgumentList "--cli",$t[0],$t[1],"more" }
+          Get-ChildItem more | Format-Table Name, Length
+          foreach ($f in "m.pdf","m.xls","m.csv","m.jpg","t.txt","t.xlsx") { if (-not (Test-Path "more\$f") -or (Get-Item "more\$f").Length -eq 0) { throw "missing $f" } }
       - name: old formats with LibreOffice (doc, xls, ppt)
         shell: pwsh
         run: |
