@@ -18,15 +18,17 @@ jobs:
           --hidden-import converters
           --exclude-module matplotlib --exclude-module pandas --exclude-module scipy --exclude-module IPython
           --exclude-module pytest --exclude-module setuptools --exclude-module pip --exclude-module onnxruntime
-          --exclude-module networkx --exclude-module numpy.f2py --exclude-module tkinter.test --exclude-module unittest
-          --exclude-module pydoc --exclude-module sqlite3 --exclude-module lib2to3
+          --exclude-module networkx --exclude-module numpy.f2py --exclude-module tkinter.test --exclude-module sqlite3 --exclude-module lib2to3
           winapp/app.py
       - name: smoke test
         shell: bash
         run: |
           echo "Привет" > t.txt
-          ./dist/Konverter.exe --cli t.txt pdf out || true
-          ls out || true
+          ./dist/Konverter.exe --cli t.txt pdf out
+          ./dist/Konverter.exe --cli out/t.pdf docx out
+          ./dist/Konverter.exe --cli out/t.pdf png out
+          ls -l out
+          test -s out/t.pdf && test -s out/t.docx && test -s out/t.png
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: windows-converter
