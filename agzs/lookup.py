@@ -27,6 +27,33 @@ class Phone(StatesGroup):
     manual = State()
 
 
+def contact_kb(uid):
+    """Меню сотрудника + кнопка «Отправить мой номер» (Telegram отдаёт номер только по нажатию самого человека)."""
+    from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+    from ui import menu, t
+    rows = [list(r) for r in menu(uid).keyboard] + [[KeyboardButton(text=t(uid, "ph_btn"), request_contact=True)]]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+@router.message(F.contact)
+async def got_contact(m: Message):
+    """Сотрудник нажал «Отправить мой номер»: сохраняем и сообщаем владельцу."""
+    from ui import menu, t
+    uid = m.from_user.id
+    c = m.contact
+    phone = norm_phone(c.phone_number)
+    if not core.role(uid) or c.user_id != uid or not phone:  # только свой номер и только сотрудник
+        return
+    core.db.set_phone(uid, phone, "self")
+    core.db.log(uname(m.from_user), "phone_shared", str(uid))
+    await m.answer(t(uid, "ph_thanks"), reply_markup=menu(uid))
+    for a in core.ids_with("staff") - {uid}:
+        try:
+            await m.bot.send_message(a, f"📞 {uname(m.from_user)} (id {uid}) отправил номер: {phone}")
+        except Exception:
+            pass
+
+
 def ikb(rows):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=x, callback_data=c) for x, c in r] for r in rows])
 
@@ -90,7 +117,7 @@ async def find_phone(target):
     if uid is not None:
         p = core.db.phone(uid)
         if p:
-            return uid, name or (core.db.seen_user(uid) or {}).get("name"), p["phone"], "введён вручную" if p["source"] == "manual" else "сохранён раньше"
+            return uid, name or (core.db.seen_user(uid) or {}).get("name"), p["phone"], {"manual": "введён вручную", "self": "сам сотрудник отправил боту"}.get(p["source"], "сохранён раньше")
     return uid, name, None, ""
 
 

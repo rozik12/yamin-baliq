@@ -58,8 +58,9 @@ class Matrix(unittest.TestCase):
     def test_welcome_texts_by_position(self):
         m = self.e.msg(ACC, "/start")
         run(bot.start(m, self.e.state(ACC)))
-        self.assertIn("Бухгалтер", self.e.last_text(m))
-        self.assertIn("финансы", self.e.last_text(m))
+        first = m.answer.call_args_list[0][0][0]
+        self.assertIn("Бухгалтер", first)
+        self.assertIn("финансы", first)
 
 
 class Access(unittest.TestCase):

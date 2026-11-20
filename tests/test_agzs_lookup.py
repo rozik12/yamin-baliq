@@ -80,5 +80,43 @@ class Phones(unittest.TestCase):
         self.assertIn("не подключён", c.message.answer.call_args[0][0])
 
 
+class SelfShare(unittest.TestCase):
+    def _contact(self, e, uid, owner_id, number="+998 90 555-66-77"):
+        m = e.msg(uid, "")
+        m.contact = SimpleNamespace(phone_number=number, user_id=owner_id)
+        return m
+
+    def test_employee_shares_own_number_and_owner_sees_it(self):
+        e = Env()
+        m = self._contact(e, OP, OP)
+        run(lookup.got_contact(m))
+        self.assertEqual(core.db.phone(OP)["phone"], "+998905556677")
+        self.assertEqual(e.tg.send_message.call_args.args[0], OWNER)
+        self.assertIn("+998905556677", e.tg.send_message.call_args.args[1])
+        r = run(lookup.find_phone(OP))
+        self.assertEqual(r[2], "+998905556677")
+        self.assertIn("сам сотрудник", r[3])
+
+    def test_foreign_contact_and_outsider_ignored(self):
+        e = Env()
+        run(lookup.got_contact(self._contact(e, OP, 12345)))  # чужой контакт
+        run(lookup.got_contact(self._contact(e, 999, 999)))  # не сотрудник
+        self.assertIsNone(core.db.phone(OP))
+        self.assertIsNone(core.db.phone(999))
+
+    def test_start_asks_new_employee_for_number(self):
+        import bot
+        e = Env()
+        m = e.msg(OP, "/start")
+        run(bot.start(m, e.state(OP)))
+        self.assertEqual(m.answer.call_count, 2)
+        kb = m.answer.call_args.kwargs["reply_markup"].keyboard
+        self.assertTrue(kb[-1][0].request_contact)
+        core.db.set_phone(OP, "+998905556677", "self")
+        m = e.msg(OP, "/start")
+        run(bot.start(m, e.state(OP)))
+        self.assertEqual(m.answer.call_count, 1)  # номер уже есть: не спрашиваем
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -68,6 +68,9 @@ async def start(m: Message, state: FSMContext):
     else:
         text = f"Здравствуйте! Ваша должность — {core.POSITIONS[r]}. Доступно: {core.POS_INFO[r]}."
     await m.answer(text, reply_markup=menu(uid))
+    if uid not in core.db.admin_ids and not core.db.phone(uid):
+        import lookup
+        await m.answer(t(uid, "ph_ask"), reply_markup=lookup.contact_kb(uid))
 
 
 @router.message(F.text.in_(V_LANG))

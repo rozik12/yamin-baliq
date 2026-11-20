@@ -97,6 +97,10 @@ TX = {
     "n_approved": {"ru": "✅ Смена №{id} принята владельцем.", "uz": "✅ №{id} smena egasi tomonidan qabul qilindi."},
     "n_returned": {"ru": "↩️ Смена №{id} возвращена владельцем на доработку. Свяжитесь с ним для исправления.",
                    "uz": "↩️ №{id} smena egasi tomonidan qayta ko'rib chiqishga qaytarildi. Tuzatish uchun u bilan bog'laning."},
+    "ph_ask": {"ru": "📱 Чтобы владелец мог связаться с вами, нажмите кнопку «Отправить мой номер» внизу. Это один раз.",
+               "uz": "📱 Egasi siz bilan bog'lana olishi uchun pastdagi «Raqamimni yuborish» tugmasini bosing. Bu bir marta."},
+    "ph_btn": {"ru": "📱 Отправить мой номер", "uz": "📱 Raqamimni yuborish"},
+    "ph_thanks": {"ru": "✅ Спасибо, номер сохранён.", "uz": "✅ Rahmat, raqam saqlandi."},
     "remind": {"ru": "⏰ Напоминание: отчёт за сегодняшнюю смену ещё не сдан. Нажмите «➕ Сменный отчёт».",
                "uz": "⏰ Eslatma: bugungi smena hisoboti hali topshirilmagan. «➕ Smena hisoboti» ni bosing."},
 }
