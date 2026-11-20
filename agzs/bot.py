@@ -405,7 +405,9 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.message.outer_middleware(TouchMiddleware())
     dp.callback_query.outer_middleware(TouchMiddleware())
+    import lookup
     import quick
+    dp.include_router(lookup.router)
     dp.include_router(quick.router)
     dp.include_router(staff.router)
     dp.include_router(extras.router)

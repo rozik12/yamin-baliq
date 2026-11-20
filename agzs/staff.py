@@ -60,7 +60,7 @@ def staff_text():
 
 
 def staff_kb():
-    rows = [[("🔗 Пригласить по ссылке", "sf:link")], [("🎯 Назначить по @нику / id", "sf:as")], [("ℹ️ Должности и права", "sf:info")]]
+    rows = [[("🔗 Пригласить по ссылке", "sf:link")], [("🎯 Назначить по @нику / id", "sf:as")], [("ℹ️ Должности и права", "sf:info")], [("📞 Номера сотрудников", "ph:menu")]]
     for p in people():
         rows.append([(f"✏️ {p[1][:24]} — {POSITIONS.get(p[3], p[3])}", f"sf:u:{p[0]}")])
     for g in core.db.grants():

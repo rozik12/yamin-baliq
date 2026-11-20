@@ -34,6 +34,7 @@ class DB:
         CREATE TABLE IF NOT EXISTS tax_payments(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, ts TEXT, amount REAL, note TEXT, user_name TEXT);
         CREATE TABLE IF NOT EXISTS prefs(uid INTEGER, key TEXT, value INTEGER, PRIMARY KEY(uid, key));
         CREATE TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY, username TEXT, name TEXT, ts TEXT);
+        CREATE TABLE IF NOT EXISTS phones(id INTEGER PRIMARY KEY, phone TEXT, source TEXT, ts TEXT);
         CREATE TABLE IF NOT EXISTS grants(username TEXT PRIMARY KEY, role TEXT, created_by TEXT, ts TEXT);
         """)
         for table, col, ddl in (("shifts", "status", "TEXT DEFAULT 'approved'"), ("shifts", "photos", "TEXT DEFAULT ''"), ("shifts", "arr_note", "TEXT DEFAULT ''"), ("shifts", "comment", "TEXT DEFAULT ''"),
@@ -292,6 +293,15 @@ class DB:
     def pref(self, uid, key, default=1):
         r = self.c.execute("SELECT value FROM prefs WHERE uid=? AND key=?", (uid, key)).fetchone()
         return default if r is None else r["value"]
+
+    def set_phone(self, uid, phone, source="manual"):
+        self.c.execute("INSERT INTO phones(id,phone,source,ts) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET phone=excluded.phone, source=excluded.source, ts=excluded.ts",
+                       (uid, phone, source, now().isoformat(timespec="seconds")))
+        self.c.commit()
+
+    def phone(self, uid):
+        r = self.c.execute("SELECT * FROM phones WHERE id=?", (uid,)).fetchone()
+        return dict(r) if r else None
 
     def set_pref(self, uid, key, value):
         self.c.execute("INSERT INTO prefs(uid,key,value) VALUES(?,?,?) ON CONFLICT(uid,key) DO UPDATE SET value=excluded.value", (uid, key, int(value)))

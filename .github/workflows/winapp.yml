@@ -65,3 +65,17 @@ jobs:
           tag_name: windows-converter
           name: Конвертер для Windows
           files: dist/Konverter.exe
+  tglogin:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller telethon==1.45.0
+      - run: pyinstaller --onefile --console --name TgLogin tools/tg_login.py
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-converter
+          name: Конвертер для Windows
+          files: dist/TgLogin.exe

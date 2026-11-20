@@ -51,6 +51,9 @@ def specs(env=None):
         e.update(BOT_TOKEN=env["AGZS_BOT_TOKEN"], ADMIN_IDS=env.get("AGZS_ADMIN_IDS", "8219891075"),
                  DB_PATH=env.get("AGZS_DB_PATH") or os.path.join(env.get("RAILWAY_VOLUME_MOUNT_PATH") or "/data", "agzs.db"),
                  OWNER_USERNAMES=env.get("AGZS_OWNER_USERNAMES", ""))
+        for k in ("AGZS_TG_API_ID", "AGZS_TG_API_HASH", "AGZS_TG_SESSION"):  # свой Telegram-аккаунт владельца для поиска номеров
+            if env.get(k):
+                e[k] = env[k]
         out.append(("agzs", e))
     only = {x.strip() for x in env.get("RUN_ONLY", "").split(",") if x.strip()}
     if only:  # например RUN_ONLY=converter: остальные боты не запускаются (данные и код остаются)
